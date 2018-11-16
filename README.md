@@ -20,9 +20,7 @@ Your annoying friend for learning vocabulary
     - It is tricky for users to input words. It is even trickier for me to handle unarranged data. This is why I made it like this. Sorry!
 
 ## Self-deploy
-<aside class="warning">
-As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY BE NOT SAFE**. Use at your own risk.
-</aside>
+> As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY BE NOT SAFE**. Use at your own risk.
 
 #### Requirements
 - [NodeJS][nodejs]
@@ -31,11 +29,9 @@ As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY BE NOT SAFE*
 - Server to run an [express][express] app.
 - MongoDB
 
-<aside class="warning">
-[Letsencrypt] is good way to get a certificate for *https*.
-Take a look at cloud service like [AWS], etc. if you don't have a server.
-Also, there's a cloud service for MongoDB [here][mongodb].
-</aside>
+> [Letsencrypt] is good way to get a certificate for *https*.
+> Take a look at cloud service like [AWS], etc. if you don't have a server.
+> Also, there's a cloud service for MongoDB [here][mongodb].
 
 #### Deployment procedure
 1. Set up [FCM][FCM].
@@ -105,15 +101,19 @@ $ npm run start
 You can find log in `server/log`.
 
 ## Screenshots
-Main
+
+### Main
+
 <img src="/screenshots/termList.png" width=300>
 <img src="/screenshots/setTerm.png" width=300>
 <img src="/screenshots/settings.png" width=300>
 
-Practice
+### Practice
+
 <img src="/screenshots/practice.png" width=300>
 
-Test
+### Test
+
 <img src="/screenshots/test1.png" width=300>
 <img src="/screenshots/test2.png" width=300>
 
