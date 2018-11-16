@@ -20,7 +20,7 @@ Your annoying friend for learning vocabulary
     - It is tricky for users to input words. It is even trickier for me to handle unarranged data. This is why I made it like this. Sorry!
 
 ## Self-deploy
-> As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY BE NOT SAFE**. Use at your own risk.
+> As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY NOT BE SAFE**. Use at your own risk.
 
 #### Requirements
 - [NodeJS][nodejs]
@@ -103,29 +103,35 @@ You can find log in `server/log`.
 ## Screenshots
 
 ### Main
-
-<img src="/screenshots/termList.png" width=300>
-<img src="/screenshots/setTerm.png" width=300>
-<img src="/screenshots/settings.png" width=300>
+<p float="left">
+  <img src="/screenshots/termList.png" width=300>
+  <img src="/screenshots/setTerm.png" width=300>
+  <img src="/screenshots/settings.png" width=300>
+</p>
 
 ### Practice
 
-<img src="/screenshots/practice.png" width=300>
+<p float="left">
+  <img src="/screenshots/practice.png" width=300>
+</p>
 
 ### Test
 
-<img src="/screenshots/test1.png" width=300>
-<img src="/screenshots/test2.png" width=300>
+<p float="left">
+  <img src="/screenshots/test1.png" width=300>
+  <img src="/screenshots/test2.png" width=300>
+</p>
 
-   [PWA]: <https://developers.google.com/web/progressive-web-apps/>
-   [CRA]: <https://github.com/facebook/create-react-app>
-   [nodejs]: <https://nodejs.org>
-   [nodejsDownload]: <https://nodejs.org/en/download/>
-   [FCM]: <https://firebase.google.com/docs/cloud-messaging/>
-   [firebaseConsole]: <https://console.firebase.google.com>
-   [express]: <https://expressjs.com/>
-   [apache]: <https://www.apache.org/>
-   [nginx]: <https://www.nginx.com/>
-   [AWS]: <https://aws.amazon.com/>
-   [mongodb]: <https://www.mongodb.com/download-center>
-   [letsencrypt]: <https://letsencrypt.org/>
+
+[PWA]: <https://developers.google.com/web/progressive-web-apps/>
+[CRA]: <https://github.com/facebook/create-react-app>
+[nodejs]: <https://nodejs.org>
+[nodejsDownload]: <https://nodejs.org/en/download/>
+[FCM]: <https://firebase.google.com/docs/cloud-messaging/>
+[firebaseConsole]: <https://console.firebase.google.com>
+[express]: <https://expressjs.com/>
+[apache]: <https://www.apache.org/>
+[nginx]: <https://www.nginx.com/>
+[AWS]: <https://aws.amazon.com/>
+[mongodb]: <https://www.mongodb.com/download-center>
+[letsencrypt]: <https://letsencrypt.org/>
