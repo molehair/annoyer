@@ -20,7 +20,9 @@ Your annoying friend for learning vocabulary
     - It is tricky for users to input words. It is even trickier for me to handle unarranged data. This is why I made it like this. Sorry!
 
 ## Self-deploy
-> As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY BE NOT SAFE**. Use at your own risk.
+<aside class="warning">
+As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY BE NOT SAFE**. Use at your own risk.
+</aside>
 
 #### Requirements
 - [NodeJS][nodejs]
@@ -29,11 +31,11 @@ Your annoying friend for learning vocabulary
 - Server to run an [express][express] app.
 - MongoDB
 
+<aside class="warning">
 [Letsencrypt] is good way to get a certificate for *https*.
-
 Take a look at cloud service like [AWS], etc. if you don't have a server.
-
 Also, there's a cloud service for MongoDB [here][mongodb].
+</aside>
 
 #### Deployment procedure
 1. Set up [FCM][FCM].
@@ -104,7 +106,7 @@ You can find log in `server/log`.
 
 ## Screenshots
 Main
-![Alt text](/screenshots/termList.png | width)
+<img src="/screenshots/termList.png" width=300>
 <img src="/screenshots/setTerm.png" width=300>
 <img src="/screenshots/settings.png" width=300>
 
