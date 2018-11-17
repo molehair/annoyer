@@ -43,9 +43,9 @@
 ## study system
 - notification
 	- total time : L
-	- # of terms a day : n
-	- # of repetitions per term : m
-	- # of terms per a notification : k
+	- \# of terms a day : n
+	- \# of repetitions per term : m
+	- \# of terms per a notification : k
 	- notification interval : T = L / ceil(mn/k)
 	- L = 8 hr, n = 16, m = k = 3	=>	T = 0.5 hr
 	- these values must be written on server side
