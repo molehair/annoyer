@@ -19,11 +19,11 @@ Your annoying friend for learning vocabulary
     - A user must score oneself on the test.
     - It is tricky for users to input words. It is even trickier for me to handle unarranged data. This is why I made it like this. Sorry!
 
-## Self-deploy
+## Installation
 > As this software aims to personal usage, **DEPLOYING FOR PUBLIC MAY NOT BE SAFE**. Use at your own risk.
 
 #### Requirements
-- [NodeJS][nodejs]
+- [NodeJS][nodejs] v10 or less. (couldn't install with v11. why?)
 - Web server for client like [Apache], [Nginx]
 - *https* domain
 - Server to run an [express][express] app.
@@ -44,8 +44,13 @@ For push notifications, Annoyer takes advantage of [FCM][FCM].
 1. Create a new project.
 
 ### Client
-Client is a [create-react-app][CRA] app. Open up `client/package.json` and fill in the following
+Client is a [create-react-app][CRA] app. Let's install npm packages first. On the terminal,
+```bash
+$ cd /path/to/client/
+$ npm install
+```
 
+Next, is configuration. Open up `client/package.json` and fill in the following
 - homepage
   - Client URI. Users connect to this address.
   - Make sure to use *https* for push notification.
@@ -55,25 +60,30 @@ Client is a [create-react-app][CRA] app. Open up `client/package.json` and fill 
   - *https* is recommended as your browser may block connecting *http* site from *https*.
   - ex) *https://myannoyer-server.com*
 - firebaseMessagingSenderId
-  - Go to `Project Setting` in the firebase console.
+  - Go to `Project Settings` in the firebase console.
   - In `Cloud Messaging` tab, copy `Sender ID` and paste it.
   - ex) *111122223333*
 - firebaseWebPushKeyPublic
-  - Go to `Project Setting` in the firebase console.
+  - Go to `Project Settings` in the firebase console.
   - In `Cloud Messaging` tab, go to `Web configuration` section and generate key pair.
   - Copy the created key pair and paste it.
   - ex) *BCv0nN4ofsFSs0iwB5s....rFuLKFjXk*
 
-Next, build the static files. In the terminal
+The following step is building the static files. In the terminal
 ```bash
-$ cd /path/to/client/
 $ npm run build
 ```
 
 Upon finished, you have `build/` directory. Place all files in `build/` in the root document of your web server. Make sure the web server has the permissions of the files.
 
 ### Server
-Server is an [express][express] app. To config the server, set the environment variables. In *bash*,
+Server is an [express][express] app. Again, install node packages first.
+```bash
+$ cd /path/to/server/
+$ npm install
+```
+
+To config the server, set the environment variables. In *bash*,
 ```bash
 $ export NODE_ENV="production"
 $ export DB_NAME="annoyer"
@@ -87,7 +97,7 @@ $ export FCM_SENDER_ID="<sender id>"
 - mongoDB address
   - If you run mongoDB on local, it's likely *mongodb://localhost:27017*
 - server key
-  - Go to `Project Setting` in the firebase console.
+  - Go to `Project Settings` in the firebase console.
   - In `Cloud Messaging` tab, copy `Server key` and paste it.
   - ex) *ABADLmuDA7s:AKA92bfii...fMFR96*
 - sender id
@@ -95,7 +105,6 @@ $ export FCM_SENDER_ID="<sender id>"
 
 Next, run the server.
 ```bash
-$ cd /path/to/server/
 $ npm run start
 ```
 You can find log in `server/log`.
@@ -104,22 +113,22 @@ You can find log in `server/log`.
 
 ### Main
 <p float="left">
-  <img src="/screenshots/termList.png" width=300>
-  <img src="/screenshots/setTerm.png" width=300>
-  <img src="/screenshots/settings.png" width=300>
+  <img src="/screenshots/termList.png" width=200>
+  <img src="/screenshots/setTerm.png" width=200>
+  <img src="/screenshots/settings.png" width=200>
 </p>
 
 ### Practice
 
 <p float="left">
-  <img src="/screenshots/practice.png" width=300>
+  <img src="/screenshots/practice.png" width=200>
 </p>
 
 ### Test
 
 <p float="left">
-  <img src="/screenshots/test1.png" width=300>
-  <img src="/screenshots/test2.png" width=300>
+  <img src="/screenshots/test1.png" width=200>
+  <img src="/screenshots/test2.png" width=200>
 </p>
 
 
