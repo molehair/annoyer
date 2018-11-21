@@ -134,7 +134,7 @@ class StudyCard extends React.Component {
       if(data.result) {
         this.setState({type: 'done', showAddTermBtn: true});
       } else {
-        this.props.showMainNotification('Failed to submit', 'error', 0);
+        core.showMainNotification('Failed to submit', 'error', 0);
       }
     });
   }
