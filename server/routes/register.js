@@ -33,10 +33,13 @@ router.post('/', function(req, res, next) {
       countingMapDefault: {},
       countingMapAudioClip: {},
     });
-  }).then((result) => {
+  }).then(result => {
     // set session data
     req.session.uid = result.insertedId;
     req.session.user = email;
+
+    // counting map semaphore
+    cntMapSems[uid]
     
     // successfully added
     logger.log('info', 'New account: ' + email);
