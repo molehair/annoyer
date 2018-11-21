@@ -4,6 +4,7 @@
   - ex: I've heard all the complaining from you that I can take. Enough is enough.
   - blankified: I've heard all the complaining from you that I can take. Enough is ___
 - make server persistent over restart?
+- check if counting map semaphore is used on adding single term
 - key bindings for answer, mnemonic, 'correct', 'wrong' buttons in test
 - save practice status in DB so that it can continued after update
 - shuffling the cards on test
