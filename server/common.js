@@ -390,20 +390,22 @@ var exports = {
       counts[exports.termTypes.default] = {};
       counts[exports.termTypes.audioClip] = {};
       for(r of results) {
-        count = counts[r.type];
-
-        // increment newLevel
-        if(count[r.newLevel]) {
-          count[r.newLevel]++;
-        } else {
-          count[r.newLevel] = 1;
-        }
-
-        // decrement oldLevel
-        if(count[r.oldLevel]) {
-          count[r.oldLevel]--;
-        } else {
-          count[r.oldLevel] = -1;
+        if(r) {
+          count = counts[r.type];
+  
+          // increment newLevel
+          if(count[r.newLevel]) {
+            count[r.newLevel]++;
+          } else {
+            count[r.newLevel] = 1;
+          }
+  
+          // decrement oldLevel
+          if(count[r.oldLevel]) {
+            count[r.oldLevel]--;
+          } else {
+            count[r.oldLevel] = -1;
+          }
         }
       }
 
