@@ -9,11 +9,15 @@ const fetch = require('node-fetch');
 const semaphore = require('semaphore');
 const env = process.env;
 
+const ABORT_PROMISE_CHAIN = 'apc';
+
 // notification
 const totalTime = 8*60;     // total practice time in min
 const stackSize = 16;       // # of terms a day
 const nRepsTerm = 3;        // # of repetitions per term
-const maxNumTermsNoti = 3;  // the maximum # of terms per a notification
+const nTermsNoti = 3;       // # of terms per a notification
+const nTotalNoti = Math.ceil(stackSize * nRepsTerm / nTermsNoti);   // # of notification a day
+const notiInterval = totalTime / nTotalNoti;    // the interval between subsequent notifications in min
 
 // just don't touch
 var secret;
@@ -22,8 +26,8 @@ var secret;
 var cntMapSems = {};
 
 // scheduler
-var schedules = {};
-var workers = {};
+var schedules = {};     // daily scheduler
+var workers = {};       // workerFunction() launcher within a day
 
 var exports = {
   db: null,
@@ -32,6 +36,8 @@ var exports = {
   importExportFields: ['type', 'term', 'def', 'ex', 'mnemonic', 'level'],
 
   init: function(app) {
+    exports.stackSize = stackSize;
+
     // trimming and stripping(/) cliant address
     let clientAddress = env.CLIENT_ADDRESS.trim();
     if(clientAddress.endsWith('/'))
@@ -43,6 +49,7 @@ var exports = {
       const users = db.collection('users');
       const terms = db.collection('terms');
       const others = db.collection('others');
+      const stacks = db.collection('stacks');
       
       let promises = [];
       exports.db = db;
@@ -124,19 +131,52 @@ var exports = {
       // user-specific variables
       promises.push(users.find().toArray()
       .then(docs => {
-        for(var doc of docs) {
-          // scheduler
-          if(doc.doPractice) {
-            exports.setScheduler(
-              doc._id,
-              doc.doPractice,
-              doc.alarmClock,
-              doc.enabledDays
-            );
-          }
+        for(let userDoc of docs) {
+          const uid = userDoc._id;
 
           // semaphore for applyCountingMapChange()
-          cntMapSems[doc._id] = semaphore(1);
+          cntMapSems[uid] = semaphore(1);
+
+          // scheduler
+          if(userDoc.doPractice) {
+            exports.setScheduler(
+              uid,
+              userDoc.doPractice,
+              userDoc.alarmClock,
+              userDoc.enabledDays,
+            );
+
+            // restore broken scheduler
+            stacks.findOne({uid})
+            .then(stackDoc => {
+              const date = new Date();
+              const curTime = date.getUTCHours()*60 + date.getUTCMinutes();
+              const elapsedTime = (24*60 + curTime - userDoc.alarmClock) % (24*60);
+              if(stackDoc && elapsedTime <= totalTime) {   // unfulfilled practice or test?
+                let offset = (totalTime + userDoc.alarmClock - curTime) % notiInterval; // totalTime => to make offset positive
+
+                // prevent unintended successive practice/test notifications
+                // ex) Alarm is set on 10:00. After sending 2nd noti on 10:30, the server is reset.
+                //     When it booted at 10:30, we should not send the next one at 10:30 again.
+                if(offset === 0 &&
+                  Math.floor(elapsedTime/notiInterval) + 1 <= stackDoc.curNotifiedCount) {
+                  offset = notiInterval;
+                }
+
+                setTimeout(() => {
+                  workerFunction(uid)    // initial execution
+                  .then(() => {
+                    if(stackDoc.curNotifiedCount < nTotalNoti) {  // Was it not a test?
+                      // set worker for the rest
+                      setWorker(uid, setInterval(() => {
+                        workerFunction(uid);
+                      }, notiInterval*60*1000));
+                    }
+                  });
+                }, offset*60*1000);
+              }
+            });
+          }
         }
         logger.log('info', 'Schedulers are set.');
       }));
@@ -147,12 +187,12 @@ var exports = {
       promises.push(terms.createIndex({term: -1})
       .then(() => logger.log('info', 'Created term index(descending)')));
     
-      return Promise.all(promises).catch(err => {
+      return Promise.all(promises).then(() => {
+        logger.log('info', '* Annoyer server is ready.');
+      }).catch(err => {
         logger.log('error', 'Unabled to run the server');
         throw err;
       });
-    }).then(() => {
-      logger.log('info', '* Annoyer server is ready.');
     });
   },
 
@@ -383,8 +423,8 @@ var exports = {
       );
     }
     
-    // maintain couting map
     return Promise.all(promises).then(results => {
+      //-- maintain couting map --//
       // sum up the level changes
       let counts = {}, r, count;
       counts[exports.termTypes.default] = {};
@@ -416,6 +456,10 @@ var exports = {
 
       // apply
       this.applyCountingMapChange(counts, uid);
+
+      //-- clear stack --//
+      const stacks = exports.db.collection('stacks');
+      stacks.deleteOne({uid});
     });
   },
 
@@ -450,17 +494,23 @@ var exports = {
   },
 
   setScheduler: function(uid, doPractice, alarmClock, enabledDays) {
+    const stacks = exports.db.collection('stacks');
+
     // clear previous scheduler
+    let clearPromise;
     logger.log('info', {schedules});
     if(uid in schedules) {
       schedules[uid].cancel();
-      clearInterval(workers[uid]);
+      clearWorker(uid);
+      clearPromise = stacks.deleteOne({uid});  
+    } else {
+      clearPromise = new Promise((resolve, reject) => {return resolve()});
     }
 
     // check it is to run scheduler
     if(!doPractice || enabledDays.every(x => {return !x})) {
       delete schedules[uid];
-      delete workers[uid]
+      clearWorker(uid);
       return;
     }
 
@@ -483,49 +533,40 @@ var exports = {
     }
     
     // set schedule
-    schedules[uid] = schedule.scheduleJob(rule, () => {
-      let notiInterval = 0;   // notification interval, min.
-      let schedulerVars = {
-        uid,
-        curNotifiedCount: 0,
-        nTermsNoti: 0,     // # of terms per notification
-        nTotalNoti: 0,     // # of total notifications per day
-        stack: [],
-        stackId: '',
-      };
-
-      // create a stack
-      return createStack(uid).then((st) => {
-        schedulerVars.stack = st;
-        const stacks = exports.db.collection('stacks');
-        return stacks.deleteOne({uid})
-        .then(() => {
-          return stacks.insertOne({uid, stack: st})
-        }).then((result) => {
-          schedulerVars.stackId = result.insertedId.toHexString();
+    return clearPromise.then(() => {
+      schedules[uid] = schedule.scheduleJob(rule, () => {
+        // create a stack
+        return createStack(uid).then(stack => {
+          if(stack.length < stackSize) {
+            // demand at least <stackSize> terms
+            msg = {
+              notiType: exports.notiTypes.announcement,
+              msg: 'Set at least ' + stackSize + ' terms to kick off!',
+            };
+            exports.sendMsg(uid, msg);
+            throw new Error(ABORT_PROMISE_CHAIN);
+          } else {
+            return stacks.insertOne({
+              uid,
+              curNotifiedCount: 0,
+              stack,
+            });
+          }
+        }).then(() => {
+          // run initial execution
+          workerFunction(uid);
+  
+          // set worker
+          clearWorker(uid);
+          setWorker(uid, setInterval(() => {
+            workerFunction(uid);
+          }, notiInterval*60*1000));
+        }).catch(err => {
+          if(err.message !== ABORT_PROMISE_CHAIN) {
+            res.status(500).json({result: false, msg: 'Server Error'});
+            logger.log('error', err);
+          }
         });
-      }).then(() => {
-        if(!schedulerVars.stack.length) return;
-
-        // calculate variables for worker
-        if(schedulerVars.stack.length < maxNumTermsNoti) {
-          schedulerVars.nTermsNoti = schedulerVars.stack.length;
-          schedulerVars.nTotalNoti = nRepsTerm;
-        } else {
-          schedulerVars.nTermsNoti = maxNumTermsNoti;
-          schedulerVars.nTotalNoti = Math.ceil(schedulerVars.stack.length * nRepsTerm / maxNumTermsNoti);
-        }
-        notiInterval = totalTime / schedulerVars.nTotalNoti;
-        
-        // run initial execution
-        workerFunction(schedulerVars);
-
-        // set worker
-        delete workers[uid];
-        workers[uid] = setInterval(() => {
-          workerFunction(schedulerVars);
-        // }, 1*1000);     // debug
-        }, notiInterval*60*1000);
       });
     });
   },
@@ -697,47 +738,58 @@ function createStack(uid) {
 }
 
 // compose & send practice, test notification
-function workerFunction(schedulerVars) {
-  const {
-    uid,
-    curNotifiedCount,
-    nTermsNoti,
-    nTotalNoti,
-    stack,
-    stackId
-  } = schedulerVars;
-  if(curNotifiedCount >= nTotalNoti) {
-    //-- send test msg --//
-    // build msg
-    msg = {
-      notiType: exports.notiTypes.test,
-      stackId: stackId,
-    };
+function workerFunction(uid) {
+  const stacks = exports.db.collection('stacks');
+  return stacks.findOne({uid}).then(doc => {
+    const stackId = doc._id;
+    const {stack, curNotifiedCount} = doc;
+    if(curNotifiedCount >= nTotalNoti) {
+      //-- send test msg --//
+      // build msg
+      msg = {
+        notiType: exports.notiTypes.test,
+        stackId,
+      };
+  
+      // send
+      return exports.sendMsg(uid, msg)
+      .then(() => {
+        clearWorker(uid);
+        stacks.deleteOne({uid});
+      });
+    } else {
+      //-- send practice msg --//
+      if(stack.length >= stackSize) {
+        // build msg
+        const curIndices = [];
+        let i = (curNotifiedCount * nTermsNoti) % stackSize;
+        for(var j=0;j<nTermsNoti;j++) {
+          curIndices.push((i+j) % stackSize);
+        }
+        let msg = {
+          notiType: exports.notiTypes.practice,
+          stackId,
+          curIndices,
+        };
+    
+        // send
+        return exports.sendMsg(uid, msg)
+        .then(() => {
+          // increment notification counter
+          return stacks.updateOne({uid}, {$set: {
+            curNotifiedCount: curNotifiedCount+1,
+          }})
+        });
+      }
+    }
+  });
+}
 
-    // send
-    exports.sendMsg(uid, msg);
-
-    clearInterval(workers[uid]);
-  } else {
-    //-- send practice msg --//
-    // build msg
-    const curIndices = [];
-    let i = (curNotifiedCount * nTermsNoti) % stack.length;
-    for(var j=0;j<nTermsNoti;j++)
-      curIndices.push((i+j) % stack.length);
-    let msg = {
-      notiType: exports.notiTypes.practice,
-      stackId: stackId,
-      curIndices: curIndices,
-    };
-
-    // send
-    exports.sendMsg(uid, msg)
-    .then(() => {
-      // increment notification counter
-      schedulerVars.curNotifiedCount++;
-    });
-  }
+function setWorker(uid, obj) { workers[uid] = obj }
+function clearWorker(uid) {
+  clearTimeout(workers[uid]);
+  clearInterval(workers[uid]);
+  delete workers[uid];
 }
 
 function sendToGroup(notificationKey, data) {
