@@ -58,7 +58,6 @@ router.post('/', function(req, res, next) {
         || 'enabledDays' in settingChange) {
         common.setScheduler(
           req.session.uid,
-          // req.session.uid.toString(),
           doc.doPractice,
           doc.alarmClock,
           doc.enabledDays);
