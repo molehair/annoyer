@@ -3,28 +3,30 @@ self.addEventListener('push', function (event) {
   const {data} = event.data.json() || {};
   const image = data.image || '/images/icons/icon-72x72.png';
   const title = data.title || 'Annoyer';
-  let url = '/';
-
-  if(data.notiType === '1') {
-    //-- practice --//
-    url = '/?action=practice&stackId=' + data.stackId + '&curIndices=' + data.curIndices;
-  } else if(data.notiType === '2') {
-    //-- test --//
-    url = '/?action=test&stackId=' + data.stackId;
-  } else if(data.notiType === '3') {
-    //-- announcement --//
-  }
 
   // Notification options
   const options = {
-    body: 'Bump yourself up!',
+    body: '',
     icon: image,
     badge: image,
     data: {
-      url: url
+      url: '/',
     },
     requireInteraction: true,
   };
+
+  if(data.notiType === '1') {
+    //-- practice --//
+    options.body = 'Bump yourself up!';
+    options.data.url = '/?action=practice&stackId=' + data.stackId + '&curIndices=' + data.curIndices;
+  } else if(data.notiType === '2') {
+    //-- test --//
+    options.body = 'End of the day!';
+    options.data.url = '/?action=test&stackId=' + data.stackId;
+  } else if(data.notiType === '3') {
+    //-- announcement --//
+    options.body = data.msg;
+  }
 
   // Wait until notification is shown
   event.waitUntil(self.registration.showNotification(title, options));
