@@ -6,11 +6,20 @@ const morgan = require('morgan');
 const helmet = require('helmet');
 const logger = require('./logger');
 const common = require('./common');
+const fs = require('fs');
 
 app.use(helmet());
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'pug');
+
+// logger
+try {
+  fs.mkdirSync('./log');
+} catch (err) {
+  if (err.code !== 'EEXIST') throw err
+}
 app.use(morgan('combined', { stream: logger.stream }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
