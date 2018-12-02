@@ -105,6 +105,7 @@ var exports = {
         'Content-Type': 'application/json',
       },
     }).then(res => {
+      exports.isTokenRegistered = false;
       return (res.ok) ? res.json() : {result: false};
     });
   },
@@ -245,6 +246,7 @@ var exports = {
         'Content-Type': 'application/json',
       },
     }).then(res => {
+      exports.isTokenRegistered = false;
       return (res.ok) ? res.json() : {result: false};
     });
   },
