@@ -8,7 +8,7 @@ router.post('/', function(req, res, next) {
 
   const users = common.db.collection('users');
 
-  users.findOne({email: email})
+  return users.findOne({email})
   .then(doc => {
     if(doc && password === doc.password) {
       req.session.uid = doc._id;
