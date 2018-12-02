@@ -30,7 +30,8 @@ class SignUp extends React.Component {
           //-- successful signup --//
           // register token(silent success)
           core.registerToken().catch(err => {
-            core.showMainNotification('Notification is blocked. You cannot receive the alarm.', 'info', 0);
+            core.showMainNotification(
+              'Notification is blocked. You cannot receive the alarm.', 'info', 0);
           });
 
           // go to main
