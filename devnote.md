@@ -1,4 +1,5 @@
 ## to do
+- unified error handling
 - blankify error
   - term: enough is enough
   - ex: I've heard all the complaining from you that I can take. Enough is enough.
