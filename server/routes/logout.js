@@ -7,7 +7,7 @@ router.get('/', function(req, res, next) {
   return common.logout(req.session).then(() => {
     return res.json({result: true});
   }).catch(err => {
-    logger.log('error', err);
+    logger.error(err.stack);
     return res.json({result: false, msg: err.toString()});
   });
 });
