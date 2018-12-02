@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2018.12.2)
+- bug fix: unable to take a test
+- bug fix: no reply from server when modifying a term
+- able to deal with concurrent requests correctly
+- create log directory if not exists
+
 ## 0.1.0 (2018.11.25)
 - demand user to add at least <stack size> terms for practice
 - persistent throughout server reset
