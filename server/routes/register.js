@@ -26,8 +26,8 @@ router.post('/', function(req, res, next) {
   }).then(() => {
     // enroll new account
     return users.insertOne({
-      email: email,
-      password: password,
+      email,
+      password,
       doPractice: false,
       alarmClock: 60,   // UTC 24-time, min
       enabledDays: [false, false, false, false, false, false, false], // Sun, Mon, ..., Sat
@@ -39,16 +39,16 @@ router.post('/', function(req, res, next) {
     req.session.uid = result.insertedId;
     req.session.user = email;
 
-    // counting map semaphore
-    cntMapSems[uid] = semaphore(1);
+    // semaphores
+    common.userSems[req.session.uid] = semaphore(1);
     
     // successfully added
-    logger.log('info', 'New account: ' + email);
+    logger.info('New account: ' + email);
     return res.json({result: true});
   }).catch(err => {
     if(err.message !== ABORT_PROMISE_CHAIN) {
       res.status(500).json({result: false, msg: 'Server Error'});
-      logger.log('error', err);
+      logger.error(err.stack);
     }
   });
 });
