@@ -18,7 +18,7 @@ router.post('/', function(req, res, next) {
   .then(docs => {
     return res.json({result: true, terms: docs});
   }).catch((err) => {
-    logger.log('error', 'Failed to get terms by ' + req.session.user
+    logger.error('Failed to get terms by ' + req.session.user
           + '\nReason: ' + err);
     return res.json({result: false});
   });

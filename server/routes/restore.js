@@ -7,6 +7,18 @@ const csv = require("fast-csv");
 
 const bulkSize = 10;
 
+function bulkInsert(termList, uid) {
+  return new Promise((resolve, reject) => {
+    common.userSems[uid].take(() => {
+      common.setTerms(termList, uid, false)
+      .then(() => {
+        common.userSems[uid].leave();
+        resolve();
+      });
+    });
+  });
+}
+
 router.post('/', function(req, res, next) {
   const form = new formidable.IncomingForm();
   form.parse(req);
@@ -20,15 +32,13 @@ router.post('/', function(req, res, next) {
         doc.level = (doc.level) ? parseInt(doc.level) : 1;
         buf.push(doc);
         if(buf.length >= bulkSize) {
-          const bufClone = JSON.parse(JSON.stringify(buf));
-          promises.push(common.setTerms(bufClone, req.session.uid, false));
+          promises.push(bulkInsert(buf, req.session.uid));
           buf = [];
         }
       })
       .on("end", () => {
         if(buf.length) {
-          const bufClone = JSON.parse(JSON.stringify(buf));
-          promises.push(common.setTerms(bufClone, req.session.uid, false));
+          promises.push(bulkInsert(buf, req.session.uid));
         }
         fileStream.destroy();
         return Promise.all(promises).then(() => res.json({result: true}));

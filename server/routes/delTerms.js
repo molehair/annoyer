@@ -4,9 +4,13 @@ var common = require('../common');
 
 router.post('/', function(req, res, next) {
   const termIDs = req.body.termIDs;
+  
   if(termIDs) {
-    return common.delTerms(termIDs, req.session.uid).then(() => {
-      return res.json({result: true});
+    common.userSems[req.session.uid].take(() => {
+      return common.delTerms(termIDs, req.session.uid).then(() => {
+        common.userSems[req.session.uid].leave();
+        return res.json({result: true});
+      });
     });
   } else {
     return res.json({result: false, msg: 'No term is received.'});
