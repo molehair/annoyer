@@ -1,9 +1,9 @@
-var crypto = require('crypto');
-var mongo = require('mongodb');
-var MongoClient = mongo.MongoClient
+const crypto = require('crypto');
+const mongo = require('mongodb');
+const MongoClient = mongo.MongoClient
 const session = require('express-session');
 const MongoDBSession = require('connect-mongodb-session');
-var schedule = require('node-schedule');
+const schedule = require('node-schedule');
 const logger = require('./logger');
 const fetch = require('node-fetch');
 const semaphore = require('semaphore');
@@ -22,8 +22,9 @@ const notiInterval = totalTime / nTotalNoti;    // the interval between subseque
 // just don't touch
 var secret;
 
-// counting map semaphores for users
-var cntMapSems = {};
+// semaphores for users
+// You need to init these in register.js and exports.init()
+var userSems = {};            // general purpose for each user
 
 // scheduler
 var schedules = {};     // daily scheduler
@@ -36,7 +37,9 @@ var exports = {
   importExportFields: ['type', 'term', 'def', 'ex', 'mnemonic', 'level'],
 
   init: function(app) {
+    // export variables
     exports.stackSize = stackSize;
+    exports.userSems = userSems;
 
     // trimming and stripping(/) cliant address
     let clientAddress = env.CLIENT_ADDRESS.trim();
@@ -60,13 +63,13 @@ var exports = {
         if(doc) {
           // found secret
           secret = doc.secret;
-          logger.log('info', 'Found secret.');
+          logger.info('Found secret.');
         } else {
           // no secret found
           // generate a new secret
           secret = crypto.randomBytes(48).toString('hex');
           return others.insertOne({secret})
-          .then(() => logger.log('info', 'Generated new secret.'));
+          .then(() => logger.info('Generated new secret.'));
         }
       }).then(() => {
         //-- secured secret --//
@@ -121,7 +124,7 @@ var exports = {
         app.use('/backup', require('./routes/backup'));
         app.use('/restore', require('./routes/restore'));
         app.use('/closeAccount', require('./routes/closeAccount'));
-        
+
         // 404
         app.use(function(req, res, next) {
           return res.status(404).send('');
@@ -134,8 +137,8 @@ var exports = {
         for(let userDoc of docs) {
           const uid = userDoc._id;
 
-          // semaphore for applyCountingMapChange()
-          cntMapSems[uid] = semaphore(1);
+          // semaphores
+          userSems[uid] = semaphore(1);
 
           // scheduler
           if(userDoc.doPractice) {
@@ -178,19 +181,19 @@ var exports = {
             });
           }
         }
-        logger.log('info', 'Schedulers are set.');
+        logger.info('Schedulers are set.');
       }));
     
       // indices
       promises.push(terms.createIndex({term: 1})
-      .then(() => logger.log('info', 'Created term index(ascending)')));
+      .then(() => logger.info('Created term index(ascending)')));
       promises.push(terms.createIndex({term: -1})
-      .then(() => logger.log('info', 'Created term index(descending)')));
+      .then(() => logger.info('Created term index(descending)')));
     
       return Promise.all(promises).then(() => {
-        logger.log('info', '* Annoyer server is ready.');
+        logger.info('* Annoyer server is ready.');
       }).catch(err => {
-        logger.log('error', 'Unabled to run the server');
+        logger.error('Unabled to run the server');
         throw err;
       });
     });
@@ -245,7 +248,7 @@ var exports = {
           if(res.ok)
             return res.json();
           else {
-            logger.log('error', res);
+            logger.error(res);
             return false;
           }
         });
@@ -308,7 +311,7 @@ var exports = {
             r.change = result.insertedCount;
             return r;
           }).catch(err => {
-            logger.log('error', err);
+            logger.error(err.stack);
             r.change = 0;
             return r;
           }).then(r => resolve(r));
@@ -316,22 +319,24 @@ var exports = {
       });
     }
 
-    // maintain couting map
     return Promise.all(promises).then(results => {
-      // sum up deleted counts
-      let counts = {}, r;
-      counts[exports.termTypes.default] = {};
-      counts[exports.termTypes.audioClip] = {};
-      for(r of results) {
-        if(counts[r.type][r.level]) {
-          counts[r.type][r.level] += r.change;
-        } else {
-          counts[r.type][r.level] = r.change;
+      if(!isModifying) {
+        //-- maintain couting map --//
+        // sum up deleted counts
+        let counts = {}, r;
+        counts[exports.termTypes.default] = {};
+        counts[exports.termTypes.audioClip] = {};
+        for(r of results) {
+          if(counts[r.type][r.level]) {
+            counts[r.type][r.level] += r.change;
+          } else {
+            counts[r.type][r.level] = r.change;
+          }
         }
+  
+        // apply
+        this.applyCountingMapChange(counts, uid);
       }
-
-      // apply
-      this.applyCountingMapChange(counts, uid);
     });
   },
 
@@ -352,7 +357,7 @@ var exports = {
           };
         }
       }).catch(err => {
-        logger.log('error', err);
+        logger.error(err.stack);
       });
     }
 
@@ -380,86 +385,105 @@ var exports = {
   applyTestResult: function(testResults, uid) {
     let promises = [];
     const terms = exports.db.collection('terms');
+    const stacks = exports.db.collection('stacks');
   
-    for(const termID in testResults) {
-      const testResult = testResults[termID];
-      promises.push(terms.findOne({_id: new mongo.ObjectID(termID), uid})
-        .then(doc => {
-          if(doc) {
-            let oldLevel = doc.level, newLevel;
-            if(doc.type === exports.termTypes.default) {
-              const defScoreChange = testResult.defScoreChange || 0;
-              const exScoreChange = testResult.exScoreChange || 0;
-  
-              doc.defScore += defScoreChange;
-              doc.exScore += exScoreChange;
+    return stacks.findOne({uid}).then(s => {
+      if(s) {
+        // build object of termIDs in the stack
+        const stackDic = {};
+        for(const termID of s.stack) {
+          stackDic[termID]=true;
+        }
 
-              if(doc.defScore >= 1 && doc.exScore >= 1) {
-                // level up
-                doc.defScore = doc.exScore = 0;
-                doc.level += 1;
-                newLevel = doc.level;
-              } else if(doc.defScore < 0 || doc.exScore < 0) {
-                // level down
-                doc.defScore = doc.exScore = 0;
-                if(doc.level > 1) {
-                  doc.level -= 1;
-                  newLevel = doc.level;
-                } else {
-                  newLevel = oldLevel;
+        for(let termID in testResults) {
+          // filter out termID not in the stack
+          if(!(termID in stackDic)) continue;
+          
+          termID = new mongo.ObjectID(termID);
+
+          const testResult = testResults[termID];
+          promises.push(terms.findOne({_id: termID, uid})
+            .then(doc => {
+              if(doc) {
+                let oldLevel = doc.level, newLevel;
+                if(doc.type === exports.termTypes.default) {
+                  const defScoreChange = testResult.defScoreChange || 0;
+                  const exScoreChange = testResult.exScoreChange || 0;
+      
+                  doc.defScore += defScoreChange;
+                  doc.exScore += exScoreChange;
+    
+                  if(doc.defScore >= 1 && doc.exScore >= 1) {
+                    // level up
+                    doc.defScore = doc.exScore = 0;
+                    doc.level += 1;
+                    newLevel = doc.level;
+                  } else if(doc.defScore < 0 || doc.exScore < 0) {
+                    // level down
+                    doc.defScore = doc.exScore = 0;
+                    if(doc.level > 1) {
+                      doc.level -= 1;
+                      newLevel = doc.level;
+                    } else {
+                      newLevel = oldLevel;
+                    }
+                  } else {
+                    // no level change
+                    newLevel = oldLevel;
+                  }
+      
+                  return terms.replaceOne({_id: new mongo.ObjectID(termID)}, {$set: doc})
+                  .then(() => {return {type: doc.type, oldLevel, newLevel}});
+                } else if(prevType === exports.termTypes.audioClip) {
+                  throw new Error('oisadmfoa0uiyugaasahsmkmals;');
                 }
-              } else {
-                // no level change
-                newLevel = oldLevel;
               }
-  
-              return terms.replaceOne({_id: new mongo.ObjectID(termID)}, {$set: doc})
-              .then(() => {return {type: doc.type, oldLevel, newLevel}});
-            } else if(prevType === exports.termTypes.audioClip) {
-              throw new Error('oisadmfoa0uiyugaasahsmkmals;');
+            })
+          );
+        }
+        
+        return Promise.all(promises).then(results => {
+          //-- maintain couting map --//
+          // sum up the level changes
+          let counts = {}, r, count;
+          counts[exports.termTypes.default] = {};
+          counts[exports.termTypes.audioClip] = {};
+          for(r of results) {
+            if(r) {
+              count = counts[r.type];
+      
+              // increment newLevel
+              if(count[r.newLevel]) {
+                count[r.newLevel]++;
+              } else {
+                count[r.newLevel] = 1;
+              }
+      
+              // decrement oldLevel
+              if(count[r.oldLevel]) {
+                count[r.oldLevel]--;
+              } else {
+                count[r.oldLevel] = -1;
+              }
             }
           }
-        })
-      );
-    }
     
-    return Promise.all(promises).then(results => {
-      //-- maintain couting map --//
-      // sum up the level changes
-      let counts = {}, r, count;
-      counts[exports.termTypes.default] = {};
-      counts[exports.termTypes.audioClip] = {};
-      for(r of results) {
-        if(r) {
-          count = counts[r.type];
-  
-          // increment newLevel
-          if(count[r.newLevel]) {
-            count[r.newLevel]++;
-          } else {
-            count[r.newLevel] = 1;
+          // trim for efficiency
+          for(count in counts) {
+            exports.trimCountingMap(count);
           }
-  
-          // decrement oldLevel
-          if(count[r.oldLevel]) {
-            count[r.oldLevel]--;
-          } else {
-            count[r.oldLevel] = -1;
-          }
-        }
+    
+          // apply
+          return this.applyCountingMapChange(counts, uid)
+          .then(() => {
+            //-- cleaning up --//
+            clearWorker(uid);
+            return stacks.deleteOne({uid});
+          });
+        });
+      } else {
+        throw new Error('Invalid test');
       }
-
-      // trim for efficiency
-      for(count in counts) {
-        exports.trimCountingMap(count);
-      }
-
-      // apply
-      this.applyCountingMapChange(counts, uid);
-
-      //-- clear stack --//
-      const stacks = exports.db.collection('stacks');
-      stacks.deleteOne({uid});
     });
   },
 
@@ -467,45 +491,37 @@ var exports = {
     const users = exports.db.collection('users');
     let typeName;
 
-    cntMapSems[uid].take(() => {
-      return users.findOne({_id: uid}).then(doc => {
-        for(typeName in exports.termTypes) {
-          const type = exports.termTypes[typeName];
-          const countingMapChange = counts[type];
-          if(Object.keys(countingMapChange).length > 0) {
-            exports.mergeCountingMaps(
-              doc.countingMapDefault,
-              countingMapChange
-            );
-            exports.trimCountingMap(doc.countingMapDefault);
+    return users.findOne({_id: uid}).then(doc => {
+      for(typeName in exports.termTypes) {
+        const type = exports.termTypes[typeName];
+        const countingMapChange = counts[type];
+        if(Object.keys(countingMapChange).length > 0) {
+          exports.mergeCountingMaps(
+            doc.countingMapDefault,
+            countingMapChange
+          );
+          exports.trimCountingMap(doc.countingMapDefault);
 
-            let set;
-            if(type === exports.termTypes.default) {
-              set = {countingMapDefault: doc.countingMapDefault};
-            } else {
-              logger.log('error', 'iasmdpfjoqadagdsl;sd');
-            } 
-            return users.updateOne({_id: uid}, {$set: set})
-            .then(() => cntMapSems[uid].leave());
-          }
+          let set;
+          if(type === exports.termTypes.default) {
+            set = {countingMapDefault: doc.countingMapDefault};
+          } else {
+            logger.error('iasmdpfjoqadagdsl;sd');
+          } 
+          return users.updateOne({_id: uid}, {$set: set});
         }
-      })
-    }, 1);
+      }
+    });
   },
 
   setScheduler: function(uid, doPractice, alarmClock, enabledDays) {
     const stacks = exports.db.collection('stacks');
 
-    // clear previous scheduler
-    let clearPromise;
-    logger.log('info', {schedules});
+    // clear previous schedule
     if(uid in schedules) {
       schedules[uid].cancel();
-      clearWorker(uid);
-      clearPromise = stacks.deleteOne({uid});  
-    } else {
-      clearPromise = new Promise((resolve, reject) => {return resolve()});
     }
+    clearWorker(uid);
 
     // check it is to run scheduler
     if(!doPractice || enabledDays.every(x => {return !x})) {
@@ -516,9 +532,7 @@ var exports = {
 
     // create rule
     const offset = new Date().getTimezoneOffset();    // offset to UTC
-    alarmClock = (alarmClock - offset);               // local time, before range adjust
-    alarmClock = alarmClock % (24*60);          // intermediate
-    alarmClock = (alarmClock >= 0) ? alarmClock : alarmClock + 26*60;   // adjusted. Range: [0, 24*60)
+    alarmClock = (24*60 + alarmClock - offset) % (24*60);     // local time. Range: [0, 24*60)
     const hour = Math.floor(alarmClock / 60);
     const minute = alarmClock % 60;
     let rule = minute + ' ' + hour + ' * * ';
@@ -533,40 +547,37 @@ var exports = {
     }
     
     // set schedule
-    return clearPromise.then(() => {
-      schedules[uid] = schedule.scheduleJob(rule, () => {
-        // create a stack
-        return createStack(uid).then(stack => {
-          if(stack.length < stackSize) {
-            // demand at least <stackSize> terms
-            msg = {
-              notiType: exports.notiTypes.announcement,
-              msg: 'Set at least ' + stackSize + ' terms to kick off!',
-            };
-            exports.sendMsg(uid, msg);
-            throw new Error(ABORT_PROMISE_CHAIN);
-          } else {
-            return stacks.insertOne({
-              uid,
-              curNotifiedCount: 0,
-              stack,
-            });
-          }
-        }).then(() => {
-          // run initial execution
+    schedules[uid] = schedule.scheduleJob(rule, () => {
+      // create a stack
+      return createStack(uid).then(stack => {
+        if(stack.length < stackSize) {
+          // demand at least <stackSize> terms
+          msg = {
+            notiType: exports.notiTypes.announcement,
+            msg: 'Set at least ' + stackSize + ' terms to kick off!',
+          };
+          exports.sendMsg(uid, msg);
+          throw new Error(ABORT_PROMISE_CHAIN);
+        } else {
+          return stacks.insertOne({
+            uid,
+            curNotifiedCount: 0,
+            stack,
+          });
+        }
+      }).then(() => {
+        // run initial execution
+        workerFunction(uid);
+
+        // set worker
+        clearWorker(uid);
+        setWorker(uid, setInterval(() => {
           workerFunction(uid);
-  
-          // set worker
-          clearWorker(uid);
-          setWorker(uid, setInterval(() => {
-            workerFunction(uid);
-          }, notiInterval*60*1000));
-        }).catch(err => {
-          if(err.message !== ABORT_PROMISE_CHAIN) {
-            res.status(500).json({result: false, msg: 'Server Error'});
-            logger.log('error', err);
-          }
-        });
+        }, notiInterval*60*1000));
+      }).catch(err => {
+        if(err.message !== ABORT_PROMISE_CHAIN) {
+          logger.error(err.stack);
+        }
       });
     });
   },
@@ -625,7 +636,7 @@ var exports = {
         if(res.ok)
           return res.json();
         else {
-          logger.log('error', res);
+          logger.error(res);
           return false;
         }
       });
@@ -695,7 +706,7 @@ function createStack(uid) {
       for(const lvl in numTerms) {
         promises.push(terms.find({uid, level:parseInt(lvl)})
         .project({_id:1}).toArray()
-        .then((result) => {
+        .then(result => {
           let sample=[];
           if(numTerms[lvl] < result.length) {
             let sampleSet = {};
@@ -716,23 +727,16 @@ function createStack(uid) {
           return sample;
         }));
       }
-      return Promise.all(promises).then((samples) => {
+      return Promise.all(promises).then(samples => {
         var retval = [];
         for(var r1 of samples) {
           for(var r2 of r1)
-            retval.push(r2._id.toHexString());
+            retval.push(r2._id);
         }
         return retval;
       });
     } else {
-      // choose entire terms
-      return terms.find({uid}).project({_id:1}).toArray()
-      .then((docs) => {
-        let stack = [];
-        for(var doc of docs)
-          stack.push(doc._id.toHexString());
-        return stack;
-      });
+      return [];    // empty stack
     }
   });
 }
@@ -741,47 +745,45 @@ function createStack(uid) {
 function workerFunction(uid) {
   const stacks = exports.db.collection('stacks');
   return stacks.findOne({uid}).then(doc => {
+    // check no stack
+    if(!doc) {
+      clearWorker(uid);
+      return;
+    }
+    
     const stackId = doc._id;
-    const {stack, curNotifiedCount} = doc;
+    const {curNotifiedCount} = doc;
+
+    // build msg
+    let msg;
     if(curNotifiedCount >= nTotalNoti) {
       //-- send test msg --//
-      // build msg
       msg = {
         notiType: exports.notiTypes.test,
         stackId,
       };
-  
-      // send
-      return exports.sendMsg(uid, msg)
-      .then(() => {
-        clearWorker(uid);
-        stacks.deleteOne({uid});
-      });
     } else {
       //-- send practice msg --//
-      if(stack.length >= stackSize) {
-        // build msg
-        const curIndices = [];
-        let i = (curNotifiedCount * nTermsNoti) % stackSize;
-        for(var j=0;j<nTermsNoti;j++) {
-          curIndices.push((i+j) % stackSize);
-        }
-        let msg = {
-          notiType: exports.notiTypes.practice,
-          stackId,
-          curIndices,
-        };
-    
-        // send
-        return exports.sendMsg(uid, msg)
-        .then(() => {
-          // increment notification counter
-          return stacks.updateOne({uid}, {$set: {
-            curNotifiedCount: curNotifiedCount+1,
-          }})
-        });
+      const curIndices = [];
+      let i = (curNotifiedCount * nTermsNoti) % stackSize;
+      for(var j=0;j<nTermsNoti;j++) {
+        curIndices.push((i+j) % stackSize);
       }
+      msg = {
+        notiType: exports.notiTypes.practice,
+        stackId,
+        curIndices,
+      };
     }
+
+    // send
+    return exports.sendMsg(uid, msg)
+    .then(() => {
+      // increment notification counter
+      return stacks.updateOne({uid}, {$set: {
+        curNotifiedCount: curNotifiedCount+1,
+      }})
+    });
   });
 }
 
@@ -805,7 +807,7 @@ function sendToGroup(notificationKey, data) {
     if(res.ok)
       return res.json();
     else {
-      logger.log('error', res);
+      logger.error(res);
       return {success: 0, failure: 0};
     }
   });
