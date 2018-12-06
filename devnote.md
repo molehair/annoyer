@@ -4,6 +4,9 @@
   - term: enough is enough
   - ex: I've heard all the complaining from you that I can take. Enough is enough.
   - blankified: I've heard all the complaining from you that I can take. Enough is ___
+  - term: set in stone
+  - ex: Keep in mind that these blueprints are not set in stone—they're just to give you a feel for the design.
+  - blankified: Keep in mind that these blueprints are not ___ ___ stone—they're just to give you a feel for the design.
 - make server persistent over restart?
 - check if counting map semaphore is used on adding single term
 - key bindings for answer, mnemonic, 'correct', 'wrong' buttons in test
