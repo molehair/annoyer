@@ -1,4 +1,6 @@
 ## to do
+- offline usage, background sync
+  - https://developers.google.com/web/updates/2015/12/background-sync
 - unified error handling
 - blankify error
   - term: enough is enough
@@ -16,9 +18,7 @@
 - remove scheduler on logout / deleting app
 - confirmation dialog if doPractice is set on signout
 - update stack when modify a term in the stack
-- save term list and settings in the local storage, syncing them background
 - ListSubheader in TermList, navigator bar like Kakaotalk
-- offline usage, background sync => this will contribute performance also
 - display 'working...' when
   adding a term,
   viewing a term,
