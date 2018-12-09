@@ -1,6 +1,7 @@
 ## to do
 - offline usage, background sync
   - https://developers.google.com/web/updates/2015/12/background-sync
+- update stack when modify a term in the stack
 - unified error handling
 - blankify error
   - term: enough is enough
@@ -9,16 +10,12 @@
   - term: set in stone
   - ex: Keep in mind that these blueprints are not set in stone—they're just to give you a feel for the design.
   - blankified: Keep in mind that these blueprints are not ___ ___ stone—they're just to give you a feel for the design.
-- make server persistent over restart?
-- check if counting map semaphore is used on adding single term
+- send only one test msg
 - key bindings for answer, mnemonic, 'correct', 'wrong' buttons in test
-- save practice status in DB so that it can continued after update
 - shuffling the cards on test
-- hide "add new term" after doing one on the test
-- remove scheduler on logout / deleting app
+- remove scheduler on deleting app
 - confirmation dialog if doPractice is set on signout
-- update stack when modify a term in the stack
-- ListSubheader in TermList, navigator bar like Kakaotalk
+- Term grouping in TermList like in Kakaotalk
 - display 'working...' when
   adding a term,
   viewing a term,
