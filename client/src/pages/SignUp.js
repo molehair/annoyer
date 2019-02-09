@@ -18,35 +18,35 @@ class SignUp extends React.Component {
     password: '',
     passwordRepeat: '',
   }
-  handleEmail(event) { this.setState({email: event.target.value}); }
-  handlePassword(event) { this.setState({password: event.target.value}); }
-  handlePasswordRepeat(event) { this.setState({passwordRepeat: event.target.value}); }
-  handleSubmit(event) {
+  handleEmail = event => this.setState({email: event.target.value})
+  handlePassword = event => this.setState({password: event.target.value})
+  handlePasswordRepeat = event => this.setState({passwordRepeat: event.target.value})
+  handleSubmit = async event => {
     event.preventDefault();
     if(this.state.password === this.state.passwordRepeat) {
-      core.register(this.state.email, this.state.password, this.state.passwordRepeat)
-      .then(data => {
-        if(data.result) {
-          //-- successful signup --//
-          // register token(silent success)
-          core.registerToken().catch(err => {
-            core.showMainNotification(
-              'Notification is blocked. You cannot receive the alarm.', 'info', 0);
-          });
+      try {
+        // enroll
+        await core.register(
+          this.state.email,
+          this.state.password,
+          this.state.passwordRepeat
+        );
+          
+        // register token(silent success)
+        core.registerToken().catch(err => core.showMainNotification(err.message, 'error', 0));
 
-          // go to main
-          core.changePage('main');
-        } else {
-          core.showMainNotification(data.msg || 'Registration failed.', 'error');
-        }
-      })
+        // go to main
+        core.changePage('main');
+      } catch(err) {
+        console.error(err);
+        core.showMainNotification(err.message || 'Registration failed.', 'error');
+      }
     } else {
       core.showMainNotification('Password mismatch', 'error');
     }
   }
-  render() {
-    const { classes } = this.props;
-
+  render = () => {
+    const {classes} = this.props;
     return (
       <React.Fragment>
         <CssBaseline />

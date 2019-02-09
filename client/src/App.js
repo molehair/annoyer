@@ -26,86 +26,57 @@ class App extends React.Component {
 
   constructor(props) {
     super(props);
-    core.init();
     core.setFunction('changePage', this.changePage);
+    core.setFunction('getCurPage', this.getCurPage);
   }
   
-  componentDidMount() {
+  componentDidMount = async () => {
     const href = new URL(window.location.href);
     this.search = querystring.parse(href.search.substring(1, href.search.length));
 
-    core.getCurrentUser().then(data => {
-      if(data.result) {
-        //-- signed in --//
-        // register token(silent success)
-        core.registerToken().catch(err => {
-          core.showMainNotification('Notification is blocked. You cannot receive the alarm.', 'info', 0);
-        });
+    await core.init();
 
-        // find proper page
-        if(this.search.action === 'practice' || this.search.action === 'test') {
-          new Promise(() => {
-            // fetch stack
-            const stackIdNew = this.search.stackId;
-            let stack = localStorage.getItem('stack');
-            let stackId = localStorage.getItem('stackId');
-            let prom;
-            if(!stack || stackId !== stackIdNew) {
-              // get the new stack
-              stackId = stackIdNew;
-              prom = core.getStack(stackId)
-              .then(data => {
-                if(data.result) {
-                  stack = data.stack;
-                  localStorage.setItem('stack', JSON.stringify(stack));
-                  localStorage.setItem('stackId', stackId);
-                } else {
-                  throw Error('Could not get the list');
-                }
-              });
-            } else {
-              // old one - check validity
-              prom = new Promise((resolve, reject) => {
-                if(stackId === data.stackId) {
-                  stack = JSON.parse(stack);
-                  resolve();
-                } else {
-                  throw Error('Invalid list');
-                }
-              });
+    if(await core.checkLogin()) {
+      //-- signed in --//
+      // initial sync check
+      core.checkSync();
+      core.sync();
+
+      // register token(silent success)
+      core.registerToken().catch(err => core.showMainNotification(err.message, 'error', 0));
+
+      // find proper page
+      if(this.search.action === 'practice' || this.search.action === 'test') {
+        // fetch stack
+        const stackInfo = await core.getStack(this.search.stackId);
+        if(stackInfo) {
+          const stack = stackInfo.stack;
+          this.stack = stack;
+          this.stackId = stackInfo._id;
+          if(this.search.action === 'practice') {
+            this.curIndices = JSON.parse(this.search.curIndices);
+            // this.setState({curPage: 'practice'});
+            this.changePage('practice');
+          } else {
+            this.questionTypes = [];
+            let i=0;
+            for(;i<stack.length;i++) {
+              this.questionTypes.push(Math.floor((Math.random()*2) % 2)); // 0 or 1, evenly
             }
-    
-            return prom.then(() => {
-              this.stack = stack;
-              if(this.search.action === 'practice') {
-                this.curIndices = JSON.parse(this.search.curIndices);
-                // this.setState({curPage: 'practice'});
-                this.changePage('practice');
-              } else {
-                let i;
-                this.questionTypes=[];
-                for(i=0;i<stack.length;i++)
-                  this.questionTypes.push(Math.floor((Math.random()*2) % 2));
-                // this.setState({curPage: 'test'});
-                this.changePage('test');
-              }
-            }).catch(err => {
-              this.displayError(err);
-            });
-          });
-        } else {
-          this.changePage('main');
+            // this.setState({curPage: 'test'});
+            this.changePage('test');
+          }
         }
       } else {
-        //-- not signed in --//
-        this.changePage('signin');
+        this.changePage('main');
       }
-    }).catch(err => {
-      this.displayError(err);
-    });
+    } else {
+      //-- not signed in --//
+      this.changePage('signin');
+    }
   }
 
-  displayError(msg) {
+  displayError = msg => {
     console.error(msg);
     if(typeof msg === 'object')
       msg = msg.toString();
@@ -115,24 +86,27 @@ class App extends React.Component {
     });
   }
 
-  changePage = (page) => this.setState({curPage: page})
-  render() {
+  changePage = page => this.setState({curPage: page})
+  getCurPage = () => this.state.curPage
+  render = () => {
     let content;
 
     if(this.state.curPage === 'loading') {
       content = <Loading onRef={ref => {this.loading = ref}} />;
     } else if(this.state.curPage === 'practice') {
-      if(this.stack && this.curIndices)
+      if(this.stack && this.curIndices) {
         content = <Study
                     action='practice'
                     stack={this.stack}
                     curIndices={this.curIndices}
                   />;
-      else
+      } else {
         this.setState({curPage: 'error', err: 'Unknown page'});
+      }
     } else if(this.state.curPage === 'test') {
       content = <Study
                   action='test'
+                  stackId={this.stackId}
                   stack={this.stack}
                   questionTypes={this.questionTypes}
                 />;

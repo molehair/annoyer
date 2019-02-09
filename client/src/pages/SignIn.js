@@ -17,26 +17,24 @@ class SignIn extends React.Component {
     email: '',
     password: '',
   }
-  handleEmail(event) { this.setState({email: event.target.value}); }
-  handlePassword(event) { this.setState({password: event.target.value}); }
-  handleSubmit(event) {
+  handleEmail = event => this.setState({email: event.target.value})
+  handlePassword = event => this.setState({password: event.target.value})
+  handleSubmit = async event => {
     event.preventDefault();
-    core.login(this.state.email, this.state.password).then(data => {
-      if(data.result) {
-        // register token(silent success)
-        core.registerToken().catch(err => {
-          core.showMainNotification(
-            'Notification is blocked. You cannot receive the alarm.', 'info', 0);
-        });
-        
-        core.changePage('main');
-      } else {
-        core.showMainNotification(data.msg || 'Login failed', 'error');
-      }
-    })
+    try {
+      await core.login(this.state.email, this.state.password);
+      
+      // go to main
+      core.changePage('main');
+
+      // register token
+      await core.registerToken();
+    } catch(err) {
+      core.showMainNotification(err.message || 'Login failed', 'error');
+    }
   }
   render() {
-    const { classes } = this.props;
+    const {classes} = this.props;
 
     return (
       <main className={classes.layout}>
