@@ -40,15 +40,25 @@ class Main extends React.Component {
     index: 0,
   };
 
-  handleIndexChange = (event, index) => this.setState({index});
+  pageInfos = [
+    {
+      label: 'List',
+      icon: <Icon>list</Icon>,
+      pageName: 'termList',
+      content: <TermList />,
+    }, {
+      label: 'Settings',
+      icon: <Icon>settings</Icon>,
+      pageName: 'settings',
+      content: <Settings />,
+    },
+  ]
+
+  handleIndexChange = (event, index) => this.setState({index})
   render() {
     const { classes } = this.props;
 
-    let content;
-    if(this.state.index === 0)
-      content = <TermList />;
-    else if(this.state.index === 1)
-      content = <Settings />;
+    const content = this.pageInfos[this.state.index].content;
 
     return (
       <div className={classes.root}>
@@ -60,8 +70,13 @@ class Main extends React.Component {
           onChange={this.handleIndexChange}
           className={classes.bottomNavigation}
         >
-          <BottomNavigationAction label="List" value={0} icon={<Icon>list</Icon>} />
-          <BottomNavigationAction label="Settings" value={1} icon={<Icon>settings</Icon>} />
+          {this.pageInfos.map((pageInfo, i) =>
+            <BottomNavigationAction
+              label={pageInfo.label}
+              icon={pageInfo.icon}
+              key={i}
+            />
+          )}
         </BottomNavigation>
       </div>
     );
