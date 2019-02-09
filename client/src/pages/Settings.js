@@ -54,19 +54,22 @@ class CloseAccountDialog extends React.Component {
   show = () => this.setState({open: true})
   close = () => this.setState({open: false, ok: ''})
   handleOK = ok => this.setState({ok})
-  deleteAccount = () => {
+  deleteAccount = async () => {
     if(this.state.ok === 'OK') {
-      core.closeAccount().then(() => {
+      try {
+        await core.closeAccount();
         core.showMainNotification('GoodBye!', 'success', 3000);
         setTimeout(() => core.changePage('signin'), 3000);
-      });
+      } catch(err) {
+        console.error(err);
+      }
     } else {
       core.showMainNotification('Type \'OK\' correctly.', 'error');
     }
   }
   
   render() {
-    const { classes } = this.props;
+    const {classes} = this.props;
     return (
       <Dialog
         open={this.state.open}
@@ -140,23 +143,24 @@ class ChangePasswordDialog extends React.Component {
     });
   };
   
-  handlePasswordSubmit = (event) => {
+  handlePasswordSubmit = async event => {
     event.preventDefault();
-    if(this.state.newPassword === this.state.newPasswordRepeat) {
-      core.setSettings({
-        oldPassword: this.state.oldPassword,
-        newPassword: this.state.newPassword,
-      }).then(data => {
-        if(data.result) {
-          core.showMainNotification('Successfully changed', 'success');
-        } else {
-          core.showMainNotification(data.msg || 'Failed to change', 'error');
-        }
-      });
-      this.close();
-    } else {
-      core.showMainNotification('New password mismatch', 'error');
+
+    // check password repeat match
+    if(this.state.newPassword !== this.state.newPasswordRepeat) {
+      core.showMainNotification('Repeat new password correctly', 'error');
+      return;
     }
+
+    try {
+      // do
+      await core.changePassword(this.state.oldPassword, this.state.newPassword);
+      core.showMainNotification('Successfully changed', 'success');
+    } catch(err) {
+      core.showMainNotification(err.message || 'Failed to change', 'error');
+    }
+
+    this.close();
   };
 
   render() {
@@ -245,28 +249,24 @@ class SettingsList extends React.Component {
     isTokenRegistered: core.isTokenRegistered,
   }
 
-  componentDidMount() {
-    core.getSettings().then(data => {
-      if(data.result) {
-        let {doPractice, alarmClock, enabledDays, email} = data.settings;
-        
-        // alarmClock: UTC to local
-        const offset = new Date().getTimezoneOffset();    // offset to UTC
-        alarmClock = (alarmClock - offset);               // local time, before range adjust
-        alarmClock = alarmClock % (24*60);          // intermediate
-        alarmClock = (alarmClock >= 0) ? alarmClock : alarmClock + 26*60;   // adjusted. Range: [0, 24*60)
-        
-        // alarmClock: number to string
-        const hour = ('' + Math.floor(alarmClock / 60)).padStart(2, '0');
-        const minute = ('' + (alarmClock % 60)).padStart(2, '0');
-        alarmClock = hour + ':' + minute;
-        
-        this.setState({doPractice, alarmClock, enabledDays, email});
-      }
-    });
+  componentDidMount = async () => {
+    let {doPractice, alarmClock, enabledDays, email} = await core.getSettings();
+    
+    // alarmClock: UTC to local
+    const offset = new Date().getTimezoneOffset();    // offset to UTC
+    alarmClock = (alarmClock - offset);               // local time, before range adjust
+    alarmClock = alarmClock % (24*60);          // intermediate
+    alarmClock = (alarmClock >= 0) ? alarmClock : alarmClock + 26*60;   // adjusted. Range: [0, 24*60)
+    
+    // alarmClock: number to string
+    const hour = ('' + Math.floor(alarmClock / 60)).padStart(2, '0');
+    const minute = ('' + (alarmClock % 60)).padStart(2, '0');
+    alarmClock = hour + ':' + minute;
+    
+    this.setState({doPractice, alarmClock, enabledDays, email});
   }
 
-  handleDoPractice = (doPractice) => {
+  handleDoPractice = doPractice => {
     return this.setSettings({doPractice})
     .then(result => {
       if(result && doPractice
@@ -277,49 +277,51 @@ class SettingsList extends React.Component {
     });
   }
 
-  handleAlarmClock = (alarmClock) => this.setSettings({alarmClock})
-  handleEnabledDays = (index) => {
+  handleAlarmClock = alarmClock => this.setSettings({alarmClock})
+  handleEnabledDays = index => {
     let enabledDays = this.state.enabledDays;
     enabledDays[index] = !enabledDays[index];
     this.setSettings({enabledDays});
   }
   
-  setSettings = (setting) => {
+  setSettings = async setting => {
     const entry = Object.keys(setting)[0];
     const oldValue = this.state[entry];
 
-    // update state
+    // transform alarmClock
     if(entry === 'alarmClock') {
       let alarmClock = setting[entry];
       const [hour, minute] = alarmClock.split(':');
       alarmClock = parseInt(hour, 10) * 60 + parseInt(minute, 10);    // local time
       const offset = new Date().getTimezoneOffset();    // offset to UTC
-      alarmClock = alarmClock + offset;  // UTC time(modulo by 24*60 is done on server side)
+      alarmClock = alarmClock + offset;  // UTC time
+      alarmClock = (alarmClock + 24*60) % (24*60);    // range adjustment [0,24*60)
       this.setState({alarmClock: setting[entry]});
       setting = {alarmClock};   // send transformed alarmClock
     } else {
       this.setState(setting);
     }
 
-    // send settings
-    return core.setSettings(setting).then(data => {
-      if(!data.result || !(entry in data.change)) {
-        core.showMainNotification(data.msg || 'Failed', 'error');
-        setting[entry] = oldValue;
-        this.setState(setting);
-        return false;
-      } else {
-        return true;
-      }
-    });
+    // set settings
+    try {
+      await core.setSettings(setting);
+    } catch(err) {
+      core.showMainNotification(err.message || 'Failed', 'error');
+      setting[entry] = oldValue;
+      this.setState(setting);
+      return false;
+    }
+
+    return true;
   }
 
-  handleLogout = () => {
-    core.logout().then(data => {
-      if(data.result) {
-        core.changePage('signin');
-      }
-    })
+  handleLogout = async () => {
+    try{
+      await core.logout();
+      core.changePage('signin');
+    } catch(err) {
+      core.showMainNotification(err.message || 'Failed', 'error');
+    }
   }
 
   handleRestore = () => {
@@ -327,38 +329,39 @@ class SettingsList extends React.Component {
     this.setState({extendRestore});
   }
   
-  onDropAccepted = (files) => {
+  onDropAccepted = async files => {
     this.setState({isDropping: false});
 
-    core.restore(files[0]).then(data => {
-      if(data.result) {
-        core.showMainNotification('Done', 'success');
-      } else {
-        core.showMainNotification(data.msg || 'Can\'t restore', 'error');
-      }
-    });
+    try {
+      await core.restore(files[0]);
+      core.showMainNotification('Done', 'success');
+    } catch(err) {
+      console.error(err);
+      core.showMainNotification(err.message || 'Can\'t restore', 'error');
+    }
   }
-  onDropRejected = (files) => {
+  
+  onDropRejected = files => {
     this.setState({isDropping: false});
     core.showMainNotification('CSV file only', 'error');
   }
 
-  handleBackup = () => {
-    core.backup().then(csv => {
-      fileDownload(csv, 'annoyer.csv');
-    });
+  handleBackup = async () => {
+    const csv = await core.backup();
+    fileDownload(csv, 'annoyer.csv');
   }
   
   handleCloseAccount = () => this.props.showCloseAccountDialog()
-  registerToken = () => {
-    core.registerToken().then(() => {
-      console.log('Registered!');
+  registerToken = async () => {
+    try {
+      await core.registerToken();
       core.showMainNotification('Registered!', 'success');
       this.setState({isTokenRegistered: true});
-    }).catch(err => {
-      console.log('err:', err);
-      core.showMainNotification('Notification is blocked. You cannot receive the alarm.', 'info', 0);
-    });
+    } catch(err) {
+      console.error(err);
+      core.showMainNotification(err.message, 'error', 0);
+      this.setState({isTokenRegistered: false});
+    }
   }
 
   render() {
