@@ -2,21 +2,31 @@ const express = require('express');
 const router = express.Router();
 const common = require('../common');
 const logger = require('../logger');
+const conf = require('../../lib/conf');
 
-router.post('/', function(req, res, next) {
+router.post('/', (req, res, next) => {
   const uid = req.session.uid;
-  common.userSems[uid].take(() => {
-    return common.applyTestResult(
-      req.body.testResults,
-      uid
-    ).then(() => {
-      common.userSems[uid].leave();
-      return res.json({result: true});
-    }).catch(err => {
-      common.userSems[uid].leave();
+  const stackId = req.body.stackId;
+  const testResults = req.body.testResults;
+  const timestamp = req.body.timestamp;
+  
+  // quisk ACK
+  res.json({result: true});
+
+  common.userSems[uid].take(async () => {
+    try {
+      await common.applyTestResult(uid, testResults, timestamp);
+      common.sendSync(uid, conf.syncTypes.applyTestResults,
+        {result: true, stackId, timestamp}
+      );
+    } catch(err) {
       logger.error(err.stack);
-      return res.json({result: false, msg: err.toString()});
-    });
+      common.sendSync(uid, conf.syncTypes.applyTestResults,
+        {result: false, stackId, timestamp, msg: err.message}
+      );
+    } finally {
+      common.userSems[uid].leave();
+    }
   });
 });
 

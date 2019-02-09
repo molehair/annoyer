@@ -3,13 +3,14 @@ const logger = require('../logger');
 const common = require('../common');
 const router = express.Router();
 
-router.get('/', function(req, res, next) {
-  return common.logout(req.session).then(() => {
+router.get('/', async (req, res, next) => {
+  try {
+    await common.logout(req.session);
     return res.json({result: true});
-  }).catch(err => {
+  } catch(err) {
     logger.error(err.stack);
-    return res.json({result: false, msg: err.toString()});
-  });
+    return res.json({result: false, msg: err.message});
+  }
 });
 
 module.exports = router;
