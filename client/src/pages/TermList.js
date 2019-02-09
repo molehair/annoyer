@@ -3,7 +3,7 @@ import core from '../core';
 import TermDialog from '../components/TermDialog';
 import PropTypes from 'prop-types';
 import { withStyles } from '@material-ui/core/styles';
-import Button from '@material-ui/core/Button';
+import Fab from '@material-ui/core/Fab';
 import Typography from '@material-ui/core/Typography';
 import Checkbox from '@material-ui/core/Checkbox';
 import IconButton from '@material-ui/core/IconButton';
@@ -24,14 +24,13 @@ class SimpleTooltips extends React.Component {
     const { classes } = this.props;
     return (
       <Tooltip title="Add new one">
-        <Button
-          variant="fab"
+        <Fab
           color="secondary"
           className={classes.absolute}
           onClick={() => this.props.addNewTerm() }
         >
           <AddIcon />
-        </Button>
+        </Fab>
       </Tooltip>
     );
   }
@@ -55,7 +54,7 @@ SimpleTooltips = withStyles(tooltipStyles)(SimpleTooltips);
 
 class VirtualTermList extends React.Component {
   state = {
-    terms: [],
+    termInfos: [],
     checked: {},
     checkedCount: 0,
   };
@@ -64,24 +63,30 @@ class VirtualTermList extends React.Component {
   constructor(props) {
     super(props);
     this.props.onRef(this);
+    core.setFunction('refreshTermList', this.refreshTermList);
   }
 
   componentDidMount = () => {
+    this._isMounted = true;
     this.refreshTermList();
   }
+
+  componentWillUnmount = () => {this._isMounted = false}
   
-  refreshTermList = () => {
-    return core.getTermList().then(data => {
-      if(data.result) {
-        this.setState({terms: data.terms});
-        let perfectChecked = {}, t;
-        for(t of data.terms)
-          perfectChecked[t._id] = true;
-        this.perfectChecked = perfectChecked;
-      } else {
-        core.showMainNotification(data.msg ||'Failed to refresh', 'error');
-      }
-    })
+  refreshTermList = async () => {
+    if(this._isMounted) {
+      const termInfos = await core.getTermList();
+  
+      this.setState({termInfos});
+  
+      // build the case of all terms are checked
+      // This is for all-check-button to work in a constant time.
+      let perfectChecked = {};
+      for(const termInfo of termInfos) {
+        perfectChecked[termInfo._id] = true;
+      };
+      this.perfectChecked = perfectChecked;
+    }
   }
 
   rowRenderer = ({
@@ -91,67 +96,66 @@ class VirtualTermList extends React.Component {
     isVisible,   // This row is visible within the List (eg it is not an overscanned row)
     style        // Style object to be applied to row (to position it)
   }) => {
-    const item = this.state.terms[index];
+    const item = this.state.termInfos[index];
 
     if(!item)
       return (<div key={key} style={style}></div>)
 
     let style2 = Object.assign({}, style, {padding: 0});
     return (
-        <ListItem
-          key={key}
-          role={undefined}
-          // dense
-          button
-          tabIndex={-1}
-          style={style2}
+      <ListItem
+        key={key}
+        role={undefined}
+        // dense
+        button
+        tabIndex={-1}
+        style={style2}
+      >
+        <Checkbox
+          checked={item._id in this.state.checked}
+          onClick={() => this.handleToggle(item._id)}
+          // disableRipple
+        />
+        <ListItemText
+          disableTypography
+          primary={item.term}
+          style={{
+            alignItems: 'center',
+            display:'flex',
+            height:style.height,
+          }}
+          onClick={() => this.props.openTerm(item._id)}
         >
-          <Checkbox
-            checked={item._id in this.state.checked}
-            onClick={() => this.handleToggle(item._id)}
-            // disableRipple
-          />
-          <ListItemText
-            disableTypography
-            primary={item.term}
-            style={{
-              alignItems: 'center',
-              display:'flex',
-              height:style.height,
-            }}
-            onClick={() => this.props.openTerm(item._id)}
-          >
-            <div style={{
-              verticalAlign: 'middle',
-            }}>
-              {item.term}
-            </div>
-          </ListItemText>
-        </ListItem>
-      // </div>
+          <div style={{
+            verticalAlign: 'middle',
+          }}>
+            {item.term}
+          </div>
+        </ListItemText>
+      </ListItem>
     )
   }
 
   handleSelectAll = () => {
     let { checkedCount } = this.state;
     let checked = {};
-    if(checkedCount === this.state.terms.length) {
+    if(checkedCount === this.state.termInfos.length) {
       checkedCount = 0;
     } else {
       Object.assign(checked, this.perfectChecked);
-      checkedCount = this.state.terms.length;
+      checkedCount = this.state.termInfos.length;
     }
     this.setState({checked, checkedCount});
   }
 
-  handleToggle = id => {
+  handleToggle = _id => {
     let { checked, checkedCount } = this.state;
 
-    if(id in checked) {
-      delete checked[id];
+    if(_id in checked) {
+      delete checked[_id];
       checkedCount--;
     } else {
-      checked[id] = true;
+      checked[_id] = true;
       checkedCount++;
     }
     this.setState({checked, checkedCount});
@@ -159,38 +163,34 @@ class VirtualTermList extends React.Component {
 
   handleDelete = () => {
     return core.delTerms(Object.keys(this.state.checked))
-    .then(data => {
-      if(data.result) {
-        core.showMainNotification('Deleted', 'success');
-        this.setState({checked: {}, checkedCount: 0});
-        this.refreshTermList();
-      } else {
-        core.showMainNotification('Failed', 'error');
-      }
+    .then(() => {
+      core.showMainNotification('Deleted', 'success');
+      this.setState({checked: {}, checkedCount: 0});
+      core.sync();
     });
   }
 
-  render() {
-    const { classes } = this.props;
+  render = () => {
+    const {classes} = this.props;
 
     let title, titleColor, topRightIcon;
-    if(!this.state.checkedCount) {
-      title = 'Total: ' + this.state.terms.length;
-      titleColor = '#000';
-      topRightIcon = (
-        <Tooltip title="Filter list">
-          <IconButton aria-label="Filter list">
-            <FilterListIcon />
-          </IconButton>
-        </Tooltip>
-      );
-    } else {
+    if(this.state.checkedCount) {
       title = this.state.checkedCount + ' selected';
       titleColor = red[500];
       topRightIcon = (
         <Tooltip title="Delete" onClick={this.handleDelete}>
           <IconButton aria-label="Delete">
             <DeleteIcon />
+          </IconButton>
+        </Tooltip>
+      );
+    } else {
+      title = 'Total: ' + this.state.termInfos.length;
+      titleColor = '#000';
+      topRightIcon = (
+        <Tooltip title="Filter list">
+          <IconButton aria-label="Filter list">
+            <FilterListIcon />
           </IconButton>
         </Tooltip>
       );
@@ -202,7 +202,7 @@ class VirtualTermList extends React.Component {
           {({ height, width }) => (
             <List
               height={height}
-              rowCount={this.state.terms.length}
+              rowCount={this.state.termInfos.length}
               rowHeight={48}
               rowRenderer={this.rowRenderer}
               width={width}
@@ -218,7 +218,7 @@ class VirtualTermList extends React.Component {
         >
           <Grid item>
             <Checkbox
-              checked={this.state.checkedCount === this.state.terms.length}
+              checked={this.state.checkedCount === this.state.termInfos.length}
               onClick={this.handleSelectAll}
               tabIndex={-1}
             />
@@ -253,25 +253,26 @@ const virtualTermListStyles = theme => ({
 VirtualTermList = withStyles(virtualTermListStyles)(VirtualTermList);
 
 class TermList extends React.Component {
-  addNewTerm = () => { this.termDialog.addNewTerm()}
-  handleTermClick = (id) => {this.termDialog.openTerm(id)}
+  addNewTerm = () => this.termDialog.addNewTerm()
 
-  setTermCallback = (data) => {
-    if(data.result) {
-      core.showMainNotification('Saved', 'success');
-      this.virtualTermList.refreshTermList();
-    } else {
+  setTermCallback = err => {
+    if(err) {
       core.showMainNotification('Failed', 'error');
+    } else {
+      core.showMainNotification('Saved', 'success');
+
+      // do sync
+      core.sync();
     }
   }
 
-  render() {
-    const { classes } = this.props;
+  render = () => {
+    const {classes} = this.props;
     return (
       <div className={classes.root}>
         <VirtualTermList
           onRef={ref => {this.virtualTermList = ref}}
-          openTerm={(id) => this.termDialog.openTerm(id)}
+          openTerm={id => this.termDialog.openTerm(id)}
           refreshTermList={this.refreshTermList}
         />
         <Divider />
