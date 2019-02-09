@@ -1,6 +1,8 @@
 ## to do
+- remove sessions on changing password
 - offline usage, background sync
   - https://developers.google.com/web/updates/2015/12/background-sync
+- refresh term list fired by another client's update
 - update stack when modify a term in the stack
 - unified error handling
 - blankify error
@@ -10,7 +12,8 @@
   - term: set in stone
   - ex: Keep in mind that these blueprints are not set in stone—they're just to give you a feel for the design.
   - blankified: Keep in mind that these blueprints are not ___ ___ stone—they're just to give you a feel for the design.
-- send only one test msg
+- send only one test msg 
+- mixing the order of term, def, ex on practice
 - key bindings for answer, mnemonic, 'correct', 'wrong' buttons in test
 - shuffling the cards on test
 - remove scheduler on deleting app
@@ -23,6 +26,7 @@
   backup,
   just everything that access DB...
 - per device notification switch(on/off)
+- length limit on term, def, ex, etc...
 - audio upload(or use youtube clip without down/uploading?)
 - get input from user when testing for a single word(considering the variants of the word)
 - search, filter termlist
@@ -30,7 +34,13 @@
 - (new menu) history: user's behavior is whether deligent or lazy
 - a bunch of notification on lazy learning
 - On blankified problem, show optional definition as a hint
+- transaction on server-side
+- replace loading page with MainNotification
+- Study.js: move codes in render() to componentDidMount()
 - https://material-ui.com/style/typography#migration-to-typography-v2
+- clean up sessions after closing account
+- refreshTermList() in TermList takes linear time. Better way?
+- make study working for non-chrome browser
 
 ## docs
 - MongoDB Node.js Driver
@@ -41,6 +51,8 @@
   - https://github.com/bvaughn/react-virtualized
 - Web App Manifest Generator(including Icons)
   - https://app-manifest.firebaseapp.com/
+- IndexedDB Promised
+  - https://github.com/jakearchibald/idb
 
 ## study system
 - notification
@@ -69,3 +81,9 @@
     - let b_i = a_1+...+a_i  for i=1, ... ,k
 	  - Pick n random numbers between 0 and b_k, and put it into proper section partitioned by {0, b1, ..., b_k}.
     - If more than n_i numbers are fallen into i th bucket, pick another random numbers.
+
+
+## synchronization
+- Timestamp is maintained as a version of each term, settings, and stack.
+- Checkum for terms is liable for integrity of term list.
+- Due to lack of timer on client in PWA, offline study is infeasible. Yet, you can add, edit, delete terms, and edit settings.
