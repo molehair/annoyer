@@ -27,7 +27,7 @@ Your annoying friend for learning vocabulary
 - Web server for client like [Apache], [Nginx]
 - *https* domain
 - Server to run an [express][express] app.
-- MongoDB
+- MongoDB(>=4.0)
 
 > [Letsencrypt] is good way to get a certificate for *https*.
 > Take a look at cloud service like [AWS], etc. if you don't have a server.
