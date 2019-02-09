@@ -7,12 +7,17 @@ const schedule = require('node-schedule');
 const logger = require('./logger');
 const fetch = require('node-fetch');
 const semaphore = require('semaphore');
-const env = process.env;
+const cs = require('../lib/checksum');
+const conf = require('../lib/conf');
+const Json2csvParser = require('json2csv').Parser;
 
-const ABORT_PROMISE_CHAIN = 'apc';
+const env = process.env;
+const importExportProject = conf.importExportFields.reduce(
+  (acc, cur) => {acc[cur] = 1; return acc}, {_id: 0}
+);
 
 // notification
-const totalTime = 8*60;     // total practice time in min
+const totalTime = 8*60;     // total practice time: 8 hours
 const stackSize = 16;       // # of terms a day
 const nRepsTerm = 3;        // # of repetitions per term
 const nTermsNoti = 3;       // # of terms per a notification
@@ -23,728 +28,944 @@ const notiInterval = totalTime / nTotalNoti;    // the interval between subseque
 var secret;
 
 // semaphores for users
-// You need to init these in register.js and exports.init()
+// You need to init these in exports.register() and exports.init()
 var userSems = {};            // general purpose for each user
 
 // scheduler
 var schedules = {};     // daily scheduler
 var workers = {};       // workerFunction() launcher within a day
 
-var exports = {
-  db: null,
-  termTypes: {default: 1, audioClip: 2},
-  notiTypes: {practice: 1, test: 2, announcement: 3},
-  importExportFields: ['type', 'term', 'def', 'ex', 'mnemonic', 'level'],
+var db, cli, exports = {};
 
-  init: function(app) {
-    // export variables
-    exports.stackSize = stackSize;
-    exports.userSems = userSems;
+exports.init = async app => {
+  // export variables
+  exports.stackSize = stackSize;
+  exports.userSems = userSems;
 
-    // trimming and stripping(/) cliant address
-    let clientAddress = env.CLIENT_ADDRESS.trim();
-    if(clientAddress.endsWith('/'))
-      clientAddress = clientAddress.substring(0, clientAddress.length-1);
+  // trimming and stripping(/) cliant address
+  let clientAddress = env.CLIENT_ADDRESS.trim();
+  if(clientAddress.endsWith('/')) {
+    clientAddress = clientAddress.substring(0, clientAddress.length-1);
+  }
 
-    return MongoClient.connect(env.MONGODB_ADDRESS, { useNewUrlParser: true })
-    .then(client => {
-      const db = client.db(env.DB_NAME);
-      const users = db.collection('users');
-      const terms = db.collection('terms');
-      const others = db.collection('others');
-      const stacks = db.collection('stacks');
-      
-      let promises = [];
-      exports.db = db;
-    
-      // secret
-      promises.push(others.findOne({secret : /.*/})
-      .then(doc => {
-        if(doc) {
-          // found secret
-          secret = doc.secret;
-          logger.info('Found secret.');
-        } else {
-          // no secret found
-          // generate a new secret
-          secret = crypto.randomBytes(48).toString('hex');
-          return others.insertOne({secret})
-          .then(() => logger.info('Generated new secret.'));
-        }
-      }).then(() => {
-        //-- secured secret --//
-        // session
-        const MongoDBStore = MongoDBSession(session);
-        app.use(session({
-          secret,
-          name: 'sessionID',
-          store: new MongoDBStore({
-            uri: env.MONGODB_ADDRESS+'/'+env.DB_NAME,
-            databaseName: env.DB_NAME,
-            collection: 'sessions',
-          }),
-          resave: false,
-          saveUninitialized: false,
-          cookie: {maxAge: 100*365*24*60*60*1000},    // 100 years
-        }));
-    
-        // CORS
-        app.use(function(req, res, next) {
-          res.header("Access-Control-Allow-Origin", clientAddress);
-          res.header("Access-Control-Allow-Credentials", "true");
-          res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-          next();
-        });
-    
-        // routes before login
-        app.use('/getCurrentUser', require('./routes/getCurrentUser'));
-        app.use('/login', require('./routes/login'));
-        app.use('/register', require('./routes/register'));
-        
-        // filter out guests
-        app.use(function(req, res, next) {
-          if (typeof req.session.user === 'undefined') {
-            return res.send({result: false});
-            // return res.status(404).send('Not found');  // client doesn't send cookie with this code(why??)
-          }
-          return next();
-        });
-        
-        // route after login
-        app.use('/getTerm', require('./routes/getTerm'));
-        app.use('/getTermList', require('./routes/getTermList'));
-        app.use('/setTerm', require('./routes/setTerm'));
-        app.use('/getStack', require('./routes/getStack'));
-        app.use('/applyTestResult', require('./routes/applyTestResult'));
-        app.use('/setToken', require('./routes/setToken'));
-        app.use('/delTerms', require('./routes/delTerms'));
-        app.use('/getSettings', require('./routes/getSettings'));
-        app.use('/setSettings', require('./routes/setSettings'));
-        app.use('/logout', require('./routes/logout'));
-        app.use('/backup', require('./routes/backup'));
-        app.use('/restore', require('./routes/restore'));
-        app.use('/closeAccount', require('./routes/closeAccount'));
+  cli = await MongoClient.connect(env.MONGODB_ADDRESS, { useNewUrlParser: true });
+  db = cli.db(env.DB_NAME);
+  const users = db.collection('users');
+  const terms = db.collection('terms');
+  const others = db.collection('others');
+  const stacks = db.collection('stacks');
+  
+  let proms = [];
 
-        // 404
-        app.use(function(req, res, next) {
-          return res.status(404).send('');
-        });
-      }));
-    
-      // user-specific variables
-      promises.push(users.find().toArray()
-      .then(docs => {
-        for(let userDoc of docs) {
-          const uid = userDoc._id;
+  // secret related jobs
+  proms.push(others.findOne({secret : /.*/})
+  .then(doc => {
+    if(doc) {
+      // found secret
+      secret = doc.secret;
+      logger.info('Found secret.');
+    } else {
+      // no secret found
+      // generate a new secret
+      secret = crypto.randomBytes(48).toString('hex');
+      return others.insertOne({secret})
+      .then(() => logger.info('Generated new secret.'));
+    }
+  }).then(() => {
+    //-- secured secret --//
+    // session
+    const MongoDBStore = MongoDBSession(session);
+    app.use(session({
+      secret,
+      name: 'sessionID',
+      store: new MongoDBStore({
+        uri: env.MONGODB_ADDRESS+'/'+env.DB_NAME,
+        databaseName: env.DB_NAME,
+        collection: 'sessions',
+      }),
+      resave: false,
+      saveUninitialized: false,
+      cookie: {maxAge: 100*365*24*60*60*1000},    // 100 years
+    }));
 
-          // semaphores
-          userSems[uid] = semaphore(1);
-
-          // scheduler
-          if(userDoc.doPractice) {
-            exports.setScheduler(
-              uid,
-              userDoc.doPractice,
-              userDoc.alarmClock,
-              userDoc.enabledDays,
-            );
-
-            // restore broken scheduler
-            stacks.findOne({uid})
-            .then(stackDoc => {
-              const date = new Date();
-              const curTime = date.getUTCHours()*60 + date.getUTCMinutes();
-              const elapsedTime = (24*60 + curTime - userDoc.alarmClock) % (24*60);
-              if(stackDoc && elapsedTime <= totalTime) {   // unfulfilled practice or test?
-                let offset = (totalTime + userDoc.alarmClock - curTime) % notiInterval; // totalTime => to make offset positive
-
-                // prevent unintended successive practice/test notifications
-                // ex) Alarm is set on 10:00. After sending 2nd noti on 10:30, the server is reset.
-                //     When it booted at 10:30, we should not send the next one at 10:30 again.
-                if(offset === 0 &&
-                  Math.floor(elapsedTime/notiInterval) + 1 <= stackDoc.curNotifiedCount) {
-                  offset = notiInterval;
-                }
-
-                setTimeout(() => {
-                  workerFunction(uid)    // initial execution
-                  .then(() => {
-                    if(stackDoc.curNotifiedCount < nTotalNoti) {  // Was it not a test?
-                      // set worker for the rest
-                      setWorker(uid, setInterval(() => {
-                        workerFunction(uid);
-                      }, notiInterval*60*1000));
-                    }
-                  });
-                }, offset*60*1000);
-              }
-            });
-          }
-        }
-        logger.info('Schedulers are set.');
-      }));
-    
-      // indices
-      promises.push(terms.createIndex({term: 1})
-      .then(() => logger.info('Created term index(ascending)')));
-      promises.push(terms.createIndex({term: -1})
-      .then(() => logger.info('Created term index(descending)')));
-    
-      return Promise.all(promises).then(() => {
-        logger.info('* Annoyer server is ready.');
-      }).catch(err => {
-        logger.error('Unabled to run the server');
-        throw err;
-      });
+    // CORS
+    app.use(function(req, res, next) {
+      res.header("Access-Control-Allow-Origin", clientAddress);
+      res.header("Access-Control-Allow-Credentials", "true");
+      res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+      next();
     });
-  },
 
-  setToken: function (uid, token) {
-    return retreiveNotificationKey(uid)
-    .then(notificationKey => {
-      if(!notificationKey) {
-        //-- need to elicit a new one --//
-        // create one and add token
-        let body = {
-          operation: 'create',
-          notification_key_name: uid,
-          registration_ids: [token],
-        };
-        return fetch('https://fcm.googleapis.com/fcm/notification', { 
-          method: 'post',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'key=' + env.FCM_SERVER_KEY,
-            'project_id': env.FCM_SENDER_ID,
-          },
-          body: JSON.stringify(body),
-        }).then(res => {
-          return (res.ok) ? res.json() : {};
-        }).then(json => {
-          if(json.error === 'notification_key already exists') {
-            return retreiveNotificationKey();
-          } else if(json.notification_key) {
-            return json.notification_key;
-          } else
-            throw json;
-        });
-      } else {
-        // add token to the group
-        let body = {
-          operation: 'add',
-          notification_key_name: uid,
-          notification_key: notificationKey,
-          registration_ids: [token],
-        };
-        return fetch('https://fcm.googleapis.com/fcm/notification', { 
-          method: 'post',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'key=' + env.FCM_SERVER_KEY,
-            'project_id': env.FCM_SENDER_ID,
-          },
-          body: JSON.stringify(body),
-        }).then(res => {
-          if(res.ok)
-            return res.json();
-          else {
-            logger.error(res);
-            return false;
+    // routes before login
+    app.use('/login', require('./routes/login'));
+    app.use('/register', require('./routes/register'));
+    
+    // filter out guests
+    app.use(function(req, res, next) {
+      if (typeof req.session.uid === 'undefined') {
+        return res.send({result: false, msg: 'unauthorized'});    // 'unauthorized' is used in core.js of client
+        // return res.status(404).send('Not found');  // client doesn't send cookie with this code(why??)
+      }
+      return next();
+    });
+    
+    // route after login
+    app.use('/getAuxInfos', require('./routes/getAuxInfos'));
+    app.use('/getTermList', require('./routes/getTermList'));
+    app.use('/getTerm', require('./routes/getTerm'));
+    app.use('/setTerms', require('./routes/setTerms'));
+    app.use('/getStack', require('./routes/getStack'));
+    app.use('/applyTestResult', require('./routes/applyTestResult'));
+    app.use('/setToken', require('./routes/setToken'));
+    app.use('/delTerms', require('./routes/delTerms'));
+    app.use('/getSettings', require('./routes/getSettings'));
+    app.use('/setSettings', require('./routes/setSettings'));
+    app.use('/logout', require('./routes/logout'));
+    app.use('/backup', require('./routes/backup'));
+    app.use('/closeAccount', require('./routes/closeAccount'));
+    app.use('/changePassword', require('./routes/changePassword'));
+
+    // 404
+    app.use(function(req, res, next) {
+      return res.status(404).send('');
+    });
+  }));
+
+  // user-specific variables
+  proms.push(users.find().toArray()
+  .then(docs => {
+    for(let userDoc of docs) {
+      const uid = userDoc._id;
+
+      // semaphores
+      userSems[uid] = semaphore(1);
+
+      // scheduler
+      if(userDoc.doPractice) {
+        setScheduler(
+          uid,
+          userDoc.doPractice,
+          userDoc.alarmClock,
+          userDoc.enabledDays,
+        );
+
+        // restore broken scheduler
+        stacks.findOne({uid})
+        .then(stackDoc => {
+          const date = new Date();
+          const curTime = date.getUTCHours()*60 + date.getUTCMinutes();
+          const elapsedTime = (24*60 + curTime - userDoc.alarmClock) % (24*60);
+          if(stackDoc && elapsedTime <= totalTime) {   // unfulfilled practice or test?
+            let offset = (totalTime + userDoc.alarmClock - curTime) % notiInterval; // totalTime => to make offset positive
+
+            // prevent unintended successive practice/test notifications
+            // ex) Alarm is set on 10:00. After sending 2nd noti on 10:30, the server is reset.
+            //     When it booted at 10:30, we should not send the next one at 10:30 again.
+            if(offset === 0 &&
+              Math.floor(elapsedTime/notiInterval) + 1 <= stackDoc.curNotifiedCount) {
+              offset = notiInterval;
+            }
+
+            setTimeout(() => {
+              workerFunction(uid)    // initial execution
+              .then(() => {
+                if(stackDoc.curNotifiedCount < nTotalNoti) {  // Was it not a test?
+                  // set worker for the rest
+                  setWorker(uid, setInterval(() => {
+                    workerFunction(uid);
+                  }, notiInterval*60*1000));
+                }
+              });
+            }, offset*60*1000);
           }
         });
       }
+    }
+    logger.info('Schedulers are set.');
+  }));
+
+  // indices
+  proms.push(terms.createIndex({timestamp: 1})
+  .then(() => logger.info('Created terms.timestamp index(ascending)')));
+
+  await Promise.all(proms);
+  logger.info('* Annoyer server is ready.');
+};
+
+exports.setToken = async (uid, token) => {
+  const notificationKey = await retreiveNotificationKey(uid);
+  if(notificationKey) {
+    //-- notification key is acquired --//
+    // add token to the group
+    let body = {
+      operation: 'add',
+      notification_key_name: uid,
+      notification_key: notificationKey,
+      registration_ids: [token],
+    };
+    const res = await fetch('https://fcm.googleapis.com/fcm/notification', { 
+      method: 'post',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'key=' + env.FCM_SERVER_KEY,
+        'project_id': env.FCM_SENDER_ID,
+      },
+      body: JSON.stringify(body),
     });
-  },
+    if(res.ok)  return res.json();
+    else {
+      logger.error(res);
+      return false;
+    }
+  } else {
+    //-- need to elicit a new one --//
+    // create one and add token
+    let body = {
+      operation: 'create',
+      notification_key_name: uid,
+      registration_ids: [token],
+    };
+    const res = await fetch('https://fcm.googleapis.com/fcm/notification', { 
+      method: 'post',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'key=' + env.FCM_SERVER_KEY,
+        'project_id': env.FCM_SENDER_ID,
+      },
+      body: JSON.stringify(body),
+    });
+    const json = (res.ok) ? await res.json() : {};
+    if(json.error === 'notification_key already exists') {
+      return retreiveNotificationKey();
+    } else if(json.notification_key) {
+      return json.notification_key;
+    } else {
+      throw new Error('No notification_key found: ' + JSON.stringify(json));
+    }
+  }
+};
 
-  hashPassword: function (password) {
-    return crypto.createHmac('sha1', secret).update(password).digest('hex');
-  },
+// options = {minTimestamp, termIds}
+// minTimestamp: (int) if given, return all terms
+//                     of timestamps greater than or equal to this value
+// termIds: (array) if given, return terms specified by this
+// Caution: The preceding option overrides the rests. That is,
+//          if minTimestamp is given, termIds is ignored.
+//          It's designed as it is because there's no case to use
+//          more than one option simultaneously.
+// If the option is not given, all terms are returned.
+exports.getTerms = (uid, options) => {
+  // Add fields in all termTypes to send together.
+  const projection = {
+    _id:1, term: 1, type:1, def:1, ex:1, mnemonic:1, timestamp:1
+  };
+  const terms = db.collection('terms');
+  let proms = [];
+  
+  if(options.minTimestamp) {
+    //-- all terms of timestamps greater than or equal to --//
+    return terms.find(
+      {uid, timestamp:{$gte:options.minTimestamp}}, {projection}
+    ).toArray();
+  } else if(options.termIDs) {
+    //-- get specific terms --//
+    for(const _id of options.termIDs) {
+      proms.push(terms.findOne({_id, uid}, {projection}));
+    }
+    return Promise.all(proms);
+  } else {
+    //-- get all terms --//
+    return terms.find({uid}, {projection}).toArray();
+  }
+};
 
-  setTerms: function(data, uid, isModifying) {
-    let promises = Array(data.length);
-    const terms = exports.db.collection('terms');
+// mongoDB seems not allowing concurrency within a session
+// Thereby, the following code is written suppressing concurrency.
+exports.setTerms = async (uid, termInfos) => {
+  const session = cli.startSession();
+  session.startTransaction();
+  
+  try {
+    const terms = db.collection('terms');
+    let results = [];
+  
+    for(let newTermInfo of termInfos) {
+      const term = newTermInfo.term || '';
+      const type = newTermInfo.type;
+      const level = parseInt(newTermInfo.level) || 1;
+      const newTS = newTermInfo.timestamp;
+      const tmpId = newTermInfo.tmpId;
+      
+      // get old term
+      let oldTermInfo;
+      if(tmpId) { // check tmpId first
+        oldTermInfo = await terms.findOne({uid, tmpId}, {session});
+      } else {
+        const _id = new mongo.ObjectID(newTermInfo._id);
+        oldTermInfo = await terms.findOne({uid, _id}, {session});
+      }
 
-    for(var i=0; i<data.length; i++) {
-      promises[i] = new Promise((resolve, reject) => {
-        const t = data[i];
-        const _id = t._id || '';
-        const term = t.term || '';
-        const type = t.type;
-        const level = t.level || 1;
-
-        // prepare new document
-        let newDoc;
-        if(type === exports.termTypes.default) {
-          if(isModifying) {
-            newDoc = {      // allow to modify only the following fields
-              ex: t.ex || '',
-              mnemonic: t.mnemonic || '',
-            };
-          } else {
-            newDoc = {
-              uid,
-              type,
-              term,
-              def: t.def || '',
-              ex: t.ex || '',
-              mnemonic: t.mnemonic || '',
-              level,
-              defScore: 0,
-              exScore: 0,
-            };
-          }
-        } else if(type === exports.termTypes.audioClip) {
-          throw new Error('implememtsadfafsagae!');
-        }
+      if(oldTermInfo && oldTermInfo.timestamp < newTS) {
+        //-- modifying --//
+        // do modify
+        oldTermInfo.ex = newTermInfo.ex || '';
+        oldTermInfo.mnemonic = newTermInfo.mnemonic || '';
+        oldTermInfo.timestamp = newTS;
 
         // set term
-        if(isModifying) {
-          return terms.updateOne({
-            _id: new mongo.ObjectID(_id),
-            uid
-          }, {$set:newDoc})
-          .then(() => resolve());
-        } else {
-          let r = {type, level};
-          return terms.insertOne(newDoc)
-          .then(result => {
-            r.change = result.insertedCount;
-            return r;
-          }).catch(err => {
-            logger.error(err.stack);
-            r.change = 0;
-            return r;
-          }).then(r => resolve(r));
-        }
-      });
-    }
-
-    return Promise.all(promises).then(results => {
-      if(!isModifying) {
-        //-- maintain couting map --//
-        // sum up deleted counts
-        let counts = {}, r;
-        counts[exports.termTypes.default] = {};
-        counts[exports.termTypes.audioClip] = {};
-        for(r of results) {
-          if(counts[r.type][r.level]) {
-            counts[r.type][r.level] += r.change;
-          } else {
-            counts[r.type][r.level] = r.change;
-          }
-        }
-  
-        // apply
-        this.applyCountingMapChange(counts, uid);
-      }
-    });
-  },
-
-  delTerms: function(termIDs, uid) {
-    let promises = Array(termIDs.length);
-    const terms = exports.db.collection('terms');
-
-    for(var i=0; i<termIDs.length; i++) {
-      promises[i] = terms.findOneAndDelete({
-        _id: new mongo.ObjectID(termIDs[i]),
-        uid,
-      }).then(result => {
-        if(result.value) {
-          return {
-            type: result.value.type,
-            level: result.value.level,
-            change: -1,
-          };
-        }
-      }).catch(err => {
-        logger.error(err.stack);
-      });
-    }
-
-    // maintain couting map
-    return Promise.all(promises).then(results => {
-      // sum up deleted counts
-      let counts = {}, r;
-      counts[exports.termTypes.default] = {};
-      counts[exports.termTypes.audioClip] = {};
-      for(r of results) {
-        if(r) {
-          if(counts[r.type][r.level]) {
-            counts[r.type][r.level] += r.change;
-          } else {
-            counts[r.type][r.level] = r.change;
-          }
-        }
-      }
-
-      // apply
-      this.applyCountingMapChange(counts, uid);
-    });
-  },
-
-  applyTestResult: function(testResults, uid) {
-    let promises = [];
-    const terms = exports.db.collection('terms');
-    const stacks = exports.db.collection('stacks');
-  
-    return stacks.findOne({uid}).then(s => {
-      if(s) {
-        // build object of termIDs in the stack
-        const stackDic = {};
-        for(const termID of s.stack) {
-          stackDic[termID]=true;
-        }
-
-        for(let termID in testResults) {
-          // filter out termID not in the stack
-          if(!(termID in stackDic)) continue;
-          
-          termID = new mongo.ObjectID(termID);
-
-          const testResult = testResults[termID];
-          promises.push(terms.findOne({_id: termID, uid})
-            .then(doc => {
-              if(doc) {
-                let oldLevel = doc.level, newLevel;
-                if(doc.type === exports.termTypes.default) {
-                  const defScoreChange = testResult.defScoreChange || 0;
-                  const exScoreChange = testResult.exScoreChange || 0;
-      
-                  doc.defScore += defScoreChange;
-                  doc.exScore += exScoreChange;
-    
-                  if(doc.defScore >= 1 && doc.exScore >= 1) {
-                    // level up
-                    doc.defScore = doc.exScore = 0;
-                    doc.level += 1;
-                    newLevel = doc.level;
-                  } else if(doc.defScore < 0 || doc.exScore < 0) {
-                    // level down
-                    doc.defScore = doc.exScore = 0;
-                    if(doc.level > 1) {
-                      doc.level -= 1;
-                      newLevel = doc.level;
-                    } else {
-                      newLevel = oldLevel;
-                    }
-                  } else {
-                    // no level change
-                    newLevel = oldLevel;
-                  }
-      
-                  return terms.replaceOne({_id: new mongo.ObjectID(termID)}, {$set: doc})
-                  .then(() => {return {type: doc.type, oldLevel, newLevel}});
-                } else if(prevType === exports.termTypes.audioClip) {
-                  throw new Error('oisadmfoa0uiyugaasahsmkmals;');
-                }
-              }
-            })
-          );
-        }
+        const _id = oldTermInfo._id;
+        await terms.replaceOne({_id, uid}, oldTermInfo, {session});
+        results.push({
+          _id,
+          timestamp: newTS,
+          changes: {},
+          isNew: false,
+        });
         
-        return Promise.all(promises).then(results => {
-          //-- maintain couting map --//
-          // sum up the level changes
-          let counts = {}, r, count;
-          counts[exports.termTypes.default] = {};
-          counts[exports.termTypes.audioClip] = {};
-          for(r of results) {
-            if(r) {
-              count = counts[r.type];
-      
-              // increment newLevel
-              if(count[r.newLevel]) {
-                count[r.newLevel]++;
-              } else {
-                count[r.newLevel] = 1;
-              }
-      
-              // decrement oldLevel
-              if(count[r.oldLevel]) {
-                count[r.oldLevel]--;
-              } else {
-                count[r.oldLevel] = -1;
-              }
-            }
-          }
-    
-          // trim for efficiency
-          for(count in counts) {
-            exports.trimCountingMap(count);
-          }
-    
-          // apply
-          return this.applyCountingMapChange(counts, uid)
-          .then(() => {
-            //-- cleaning up --//
-            clearWorker(uid);
-            return stacks.deleteOne({uid});
-          });
+        // update _id for reply
+        newTermInfo._id = _id;
+      } else if(!oldTermInfo) {
+        //-- new --//
+        const insertResult = await terms.insertOne({
+          uid,
+          type,
+          term,
+          def: newTermInfo.def || '',
+          ex: newTermInfo.ex || '',
+          mnemonic: newTermInfo.mnemonic || '',
+          level,
+          defScore: 0,
+          exScore: 0,
+          timestamp: newTS,
+          tmpId,
+        }, {session});
+
+        // update _id for reply
+        newTermInfo._id = insertResult.insertedId;
+
+        // extract info for countingMap
+        const changes = {};
+        changes[level] = insertResult.insertedCount;
+        results.push({
+          type,
+          level,
+          timestamp: newTS,
+          changes,
+          _id: insertResult.insertedId,
+          isNew: true,
         });
       } else {
-        throw new Error('Invalid test');
+        //-- nothing to do --//
+        // update _id for reply
+        newTermInfo._id = oldTermInfo._id;
+
+        // placeholder
+        results.push();
       }
-    });
-  },
+    }
 
-  applyCountingMapChange: function(counts, uid) {
-    const users = exports.db.collection('users');
-    let typeName;
+    // gather results
+    let maxLastTS = 0, ids = [];
+    for(const result of results) {
+      if(result) {
+        // maxLastTS
+        maxLastTS = Math.max(maxLastTS, result.timestamp);
 
-    return users.findOne({_id: uid}).then(doc => {
-      for(typeName in exports.termTypes) {
-        const type = exports.termTypes[typeName];
-        const countingMapChange = counts[type];
-        if(Object.keys(countingMapChange).length > 0) {
-          exports.mergeCountingMaps(
-            doc.countingMapDefault,
-            countingMapChange
-          );
-          exports.trimCountingMap(doc.countingMapDefault);
-
-          let set;
-          if(type === exports.termTypes.default) {
-            set = {countingMapDefault: doc.countingMapDefault};
-          } else {
-            logger.error('iasmdpfjoqadagdsl;sd');
-          } 
-          return users.updateOne({_id: uid}, {$set: set});
+        // extract _id
+        if(result.isNew) {
+          ids.push(result._id.toHexString());
         }
       }
-    });
-  },
-
-  setScheduler: function(uid, doPractice, alarmClock, enabledDays) {
-    const stacks = exports.db.collection('stacks');
-
-    // clear previous schedule
-    if(uid in schedules) {
-      schedules[uid].cancel();
     }
+
+    // maintain auxilary variables
+    const options = {
+      lastTimestamps: {terms: maxLastTS},
+      countingMapChanges: combineLevelChanges(results),
+      addChecksums: {terms:cs.getChecksums(ids)},
+    };
+    await updateUserInfo(uid, session, options);
+
+    await session.commitTransaction();
+    return termInfos;
+  } catch(err) {
+    logger.error(err.stack);
+    await session.abortTransaction();
+    throw err; // Rethrow so calling function sees error
+  } finally {
+    // close session
+    session.endSession();
+  }
+};
+
+// mongoDB seems not allowing concurrency within a session
+// Thereby, the following code is written suppressing concurrency.
+exports.delTerms = async (uid, termInfos) => {
+  const session = cli.startSession();
+  session.startTransaction();
+  
+  try {
+    const terms = db.collection('terms');
+
+    // delete
+    let results = [];
+    for(let termInfo of termInfos) {
+      let deleteResult;
+      if(termInfo._id.startsWith(conf.tmpIdPrefixes.term)) {
+        //-- temp id --//
+        const tmpId = termInfo._id;
+        deleteResult = await terms.findOneAndDelete({tmpId, uid}, {session});
+      } else {
+        //-- real _id --//
+        const _id = new mongo.ObjectID(termInfo._id);
+        deleteResult = await terms.findOneAndDelete({_id, uid}, {session});
+      }
+      
+      if(deleteResult.value) {
+        const delResVal = deleteResult.value;
+        // piece for updating auxiliary infos
+        let result = {
+          _id: delResVal._id,
+          type: delResVal.type,
+          changes: {},
+          timestamp: termInfo.timestamp,
+        };
+        result.changes[delResVal.level] = -1;
+        results.push(result);
+
+        // update _id
+        termInfo._id = delResVal._id;
+      } else {
+        results.push();
+      }
+    };
+    
+    // extract some infos
+    let maxLastTS = 0, ids = [];   // don't change to "_ids". This bring MongoDB error.
+    for(const result of results) {
+      if(result) {
+        // maxLastTS
+        maxLastTS = Math.max(maxLastTS, result.timestamp);
+
+        // extract _id
+        ids.push(result._id.toHexString());
+      }
+    }
+
+    // maintain auxilary variables
+    const options = {
+      lastTimestamps: {terms: maxLastTS},
+      countingMapChanges: combineLevelChanges(results),
+      subChecksums: {terms:cs.getChecksums(ids)},
+    };
+    await updateUserInfo(uid, session, options);
+
+    await session.commitTransaction();
+    return termInfos;
+  } catch(err) {
+    logger.error(err.stack);
+    await session.abortTransaction();
+    throw err; // Rethrow so calling function sees error
+  } finally {
+    session.endSession();
+  }
+};
+
+exports.getSettings = async uid => {
+  const users = db.collection('users');
+  const doc = await users.findOne({_id: uid});
+  return {
+    doPractice: doc.doPractice,
+    alarmClock: doc.alarmClock,
+    enabledDays: doc.enabledDays,
+    email: doc.email,
+    timestamp: doc.lastTimestamps.settings,
+  };
+}
+
+exports.setSettings = async (uid, data) => {
+  const session = cli.startSession();
+  session.startTransaction();
+  
+  try {
+    const users = db.collection('users');
+    const stacks = db.collection('stacks');
+  
+    let settingsChange = {};
+  
+    // doPractice
+    if('doPractice' in data && typeof data.doPractice === 'boolean') {
+      settingsChange.doPractice = data.doPractice;
+    }
+    
+    // alarmClock
+    if('alarmClock' in data) {
+      settingsChange.alarmClock = data.alarmClock;
+    }
+    
+    // enabledDays
+    if('enabledDays' in data) {
+      let isValid = true;
+      if(data.enabledDays.length === 7) {
+        for(const x of data.enabledDays) {
+          if(typeof x !== 'boolean') {
+            isValid = false;
+            break;
+          }
+        }
+      } else {
+        isValid = false;
+      }
+      
+      if(isValid) {
+        settingsChange.enabledDays = data.enabledDays;
+      } else {
+        throw new Error('Invalid enabled days.');
+      }
+    }
+
+    // filter out if nothing to do
+    if(Object.keys(settingsChange).length === 0) return;
+    
+    // if given settings are new ones
+    let doc = await users.findOne({_id: uid});
+    if(doc.lastTimestamps[conf.timestampFields.settings] < data.timestamp) {
+      // update with given settings
+      Object.assign(doc, settingsChange);
+      doc.lastTimestamps[conf.timestampFields.settings] = data.timestamp;
+      await users.replaceOne({_id: uid}, doc, {session});
+
+
+      // refresh scheduler
+      if('doPractice' in settingsChange
+        || 'alarmClock' in settingsChange
+        || 'enabledDays' in settingsChange) {
+        await stacks.deleteOne({uid}, {session});
+        const doc = await users.findOne({_id:uid}, {session});
+        await setScheduler(uid, doc.doPractice, doc.alarmClock, doc.enabledDays);
+      }
+    }
+
+    // close session
+    await session.commitTransaction();
+  } catch(err) {
+    logger.error(err.stack);
+    await session.abortTransaction();
+    throw err; // Rethrow so calling function sees error
+  } finally {
+    session.endSession();
+  }
+}
+
+exports.getStack = async (uid, stackId) => {
+  const stacks = db.collection('stacks');
+
+  // make filter
+  let filter = {uid};
+  if(stackId) {
+    filter['_id'] = new mongo.ObjectId(stackId);
+  }
+
+  // look up
+  const doc = await stacks.findOne(filter);
+  if(doc) {   // deliver only if there's a stack
+    return {
+      _id: doc._id,
+      stack: doc.stack,
+      timestamp: doc.timestamp,
+    };
+  } else {
+    throw new Error('no stack');
+  }
+}
+
+exports.changePassword = async (uid, oldPassword, newPassword) => {
+  const session = cli.startSession();
+  session.startTransaction();
+  
+  try {
+    const users = db.collection('users');
+  
+    // change only if the old password is matched
+    const result = await users.updateOne({
+      _id: uid,
+      password: hashPassword(oldPassword),
+    }, {$set: {password: hashPassword(newPassword)}},
+    {session});
+
+    // check
+    if(result.modifiedCount === 0) {
+      //-- failed --//
+      throw new Error('Failed');
+    }
+  
+    //-- success --//
+    // close session
+    await session.commitTransaction();
+  } catch(err) {
+    logger.error(err.stack);
+    await session.abortTransaction();
+    throw err; // Rethrow so calling function sees error
+  } finally {
+    session.endSession();
+  }
+}
+
+// mongoDB seems not allowing concurrency within a session
+// Thereby, the following code is written suppressing concurrency.
+exports.applyTestResult = async (uid, testResults, newTimestamp) => {
+  const session = cli.startSession();
+  session.startTransaction();
+  
+  try {
+    const terms = db.collection('terms');
+    const users = db.collection('users');
+    const stacks = db.collection('stacks');
+
+    // prevent duplicate applying
+    const userDoc = await users.findOne({_id: uid}, {session});
+    if(newTimestamp <= userDoc.lastTimestamps.testResults)  return;
+
+    let results = [];
+    for(let _id in testResults) {
+      _id = new mongo.ObjectID(_id);
+      const testResult = testResults[_id];
+      const doc = await terms.findOne({_id, uid}, {session});
+  
+      if(!doc) return;
+
+      let oldLevel = doc.level, newLevel;
+      if(doc.type === conf.termTypes.default) {
+        const defScoreChange = testResult.defScoreChange || 0;
+        const exScoreChange = testResult.exScoreChange || 0;
+
+        // apply score change
+        doc.defScore += defScoreChange;
+        doc.exScore += exScoreChange;
+
+        // check level change
+        if(doc.defScore >= 1 && doc.exScore >= 1) {
+          // level up
+          doc.defScore = doc.exScore = 0;
+          doc.level += 1;
+          newLevel = doc.level;
+        } else if(doc.defScore < 0 || doc.exScore < 0) {
+          // level down
+          doc.defScore = doc.exScore = 0;
+          if(doc.level > 1) {
+            doc.level -= 1;
+            newLevel = doc.level;
+          } else {
+            newLevel = oldLevel;
+          }
+        } else {
+          // no level change
+          newLevel = oldLevel;
+        }
+
+        // apply
+        await terms.replaceOne({_id}, {$set: doc}, {session});
+
+        // calculate level change
+        let result = {type: doc.type, changes:{}};
+        if(oldLevel !== newLevel) {
+          result.changes[oldLevel] = -1;
+          result.changes[newLevel] = 1;
+        }
+        results.push(result);
+      } else if(prevType === conf.termTypes.audioClip) {
+        throw new Error('oisadmfoa0uiyugaasahsmkmals;');
+      }
+    }
+
+    // maintain auxilary variables
+    const options = {
+      countingMapChanges: combineLevelChanges(results),
+      lastTimestamps: {testResults: newTimestamp},
+    };
+    await updateUserInfo(uid, session, options);
+
+    // cleaning up
+    clearWorker(uid);
+    await stacks.deleteOne({uid}, {session});
+
+    //-- success --//
+    // close session
+    await session.commitTransaction();
+  } catch(err) {
+    logger.error(err.stack);
+    await session.abortTransaction();
+    throw err; // Rethrow so calling function sees error
+  } finally {
+    session.endSession();
+  }
+};
+
+exports.sendSync = (uid, type, syncInfos) => {
+  return exports.sendMsg(uid, conf.notiTypes.sync, {type, syncInfos});
+};
+
+exports.sendMsg = async (uid, notiType, data) => {
+  data.notiType = notiType;
+  try {
+    const notificationKey = await retreiveNotificationKey(uid);
+    if(notificationKey) {
+      return await sendToGroup(notificationKey, data);
+    } else {
+      return false;
+    }
+  } catch(err) {
+    logger(err.stack);
+  }
+};
+
+// No return. 'origin' argument will be changed.
+exports.mergeCountingMaps = (origin, change) => {
+  for(var lvl in change) {
+    if(lvl in origin) {
+      origin[lvl] += change[lvl];
+    } else {
+      origin[lvl] = change[lvl];
+    }
+  }
+};
+  
+// delete elements whose value is 0
+exports.trimCountingMap = countingMap => {
+  for(var lvl in countingMap) {
+    if(countingMap[lvl] === 0)
+      delete countingMap[lvl];
+  }
+};
+
+exports.login = async (email, password) => {
+  const users = db.collection('users');
+  password = hashPassword(password);
+  const doc = await users.findOne({email});
+  if(doc && password === doc.password) {
+    return doc._id;
+  } else {
+    throw new Error('Incorrect ID/password.');
+  }
+}
+
+exports.logout = session => {
+  const uid = session.uid;
+  let proms = [];
+
+  // remove token from the group
+  proms.push(retreiveNotificationKey(uid)
+  .then(async notificationKey => {
+    let body = {
+      operation: 'remove',
+      notification_key_name: uid,
+      notification_key: notificationKey,
+      registration_ids: [session.token],
+    };
+    const res = await fetch('https://fcm.googleapis.com/fcm/notification', { 
+      method: 'post',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'key=' + env.FCM_SERVER_KEY,
+        'project_id': env.FCM_SENDER_ID,
+      },
+      body: JSON.stringify(body),
+    });
+    if(res.ok)  return res.json();
+    else {
+      logger.error(res);
+      return false;
+    }
+  }));
+
+  // destroy session
+  proms.push(new Promise((resolve, reject) => {
+    session.destroy(function(err) {
+      if(err) reject(err);
+      else    resolve();
+    });
+  }));
+  
+  return Promise.all(proms);
+};
+
+exports.register = async (email, password) => {
+  password = hashPassword(password);
+
+  // register
+  const users = db.collection('users');
+  const doc = await users.findOne({email});
+  if(doc) {
+    throw new Error('Your email is already enrolled. Try another.');
+  }
+
+  // countingMap
+  let countingMap = {};
+  Object.keys(conf.termTypes).forEach(termType => {countingMap[termType] = {}});
+
+  // enroll new account
+  const result = await users.insertOne(Object.assign({},
+    conf.defaultValues.settings,
+    {checksums: conf.defaultValues.checksums},
+    {lastTimestamps: conf.defaultValues.lastTimestamps},
+    {email, password, countingMap},
+  ));
+  const uid = result.insertedId;
+
+  // semaphores
+  userSems[uid] = semaphore(1);
+  
+  // successfully added
+  logger.info('New account: ' + email);
+
+  return uid;
+}
+
+exports.getAuxInfos = async uid => {
+  const doc = await db.collection('users').findOne({_id: uid});
+  return {
+    lastTimestamps: doc.lastTimestamps,
+    checksums: doc.checksums,
+  };
+}
+
+exports.backup = async uid => {
+  const terms = db.collection('terms');
+  const docs = await terms.find({uid}).project(importExportProject).toArray();
+  const json2csvParser = new Json2csvParser({fields: conf.importExportFields});
+  return json2csvParser.parse(docs);
+}
+
+exports.closeAccount = async uid => {
+  const session = cli.startSession();
+  session.startTransaction();
+
+  try {
+    const users = db.collection('users');
+    const terms = db.collection('terms');
+    const tokens = db.collection('tokens');
+    const stacks = db.collection('stacks');
+    // const sessions = db.collection('sessions');
+
+    // get userInfo
+    const userInfo = await users.findOne({_id: uid});
+
+    // destroy user data
+    // taking advantage of concurrency of MongoDB 4.0.5 has failed
+    await users.deleteOne({_id: uid}, {session});
+    await terms.deleteMany({uid}, {session});
+    await tokens.deleteMany({uid}, {session});
+    await stacks.deleteMany({uid}, {session});
+    // proms.push(sessions.deleteMany({"session.uid": uid}, {session}));    // This brings error during session opened
     clearWorker(uid);
 
-    // check it is to run scheduler
-    if(!doPractice || enabledDays.every(x => {return !x})) {
-      delete schedules[uid];
-      clearWorker(uid);
-      return;
-    }
-
-    // create rule
-    const offset = new Date().getTimezoneOffset();    // offset to UTC
-    alarmClock = (24*60 + alarmClock - offset) % (24*60);     // local time. Range: [0, 24*60)
-    const hour = Math.floor(alarmClock / 60);
-    const minute = alarmClock % 60;
-    let rule = minute + ' ' + hour + ' * * ';
-    if(enabledDays.every(x => {return x}))
-      rule += '*';
-    else {
-      for(var i=0;i<7;i++) {
-        if(enabledDays[i])
-          rule += i+',';
-      }
-      rule = rule.substring(0, rule.length-1);
-    }
-    
-    // set schedule
-    schedules[uid] = schedule.scheduleJob(rule, () => {
-      // create a stack
-      return createStack(uid).then(stack => {
-        if(stack.length < stackSize) {
-          // demand at least <stackSize> terms
-          msg = {
-            notiType: exports.notiTypes.announcement,
-            msg: 'Set at least ' + stackSize + ' terms to kick off!',
-          };
-          exports.sendMsg(uid, msg);
-          throw new Error(ABORT_PROMISE_CHAIN);
-        } else {
-          return stacks.insertOne({
-            uid,
-            curNotifiedCount: 0,
-            stack,
-          });
-        }
-      }).then(() => {
-        // run initial execution
-        workerFunction(uid);
-
-        // set worker
-        clearWorker(uid);
-        setWorker(uid, setInterval(() => {
-          workerFunction(uid);
-        }, notiInterval*60*1000));
-      }).catch(err => {
-        if(err.message !== ABORT_PROMISE_CHAIN) {
-          logger.error(err.stack);
-        }
-      });
-    });
-  },
-
-  sendMsg: function(uid, msg) {
-    return retreiveNotificationKey(uid)
-    .then(notificationKey => {
-      if(notificationKey) {
-        return sendToGroup(notificationKey, msg);
-      } else {
-        return false;
-      }
-    });
-  },
-
-  // No return. 'origin' argument will be changed.
-  mergeCountingMaps: function(origin, change) {
-    for(var lvl in change) {
-      if(lvl in origin)
-        origin[lvl] += change[lvl];
-      else
-        origin[lvl] = change[lvl];
-    }
-  },
-  
-  // delete elements whose value is <= 0
-  trimCountingMap: function(countingMap) {
-    for(var lvl in countingMap) {
-      if(countingMap[lvl] <= 0)
-        delete countingMap[lvl];
-    }
-  },
-
-  logout: function(session) {
-    const uid = session.uid;
-    let promises = [];
-
-    // remove token from the group
-    promises.push(retreiveNotificationKey(uid)
-    .then(notificationKey => {
-      let body = {
-        operation: 'remove',
-        notification_key_name: uid,
-        notification_key: notificationKey,
-        registration_ids: [session.token],
-      };
-      return fetch('https://fcm.googleapis.com/fcm/notification', { 
-        method: 'post',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'key=' + env.FCM_SERVER_KEY,
-          'project_id': env.FCM_SENDER_ID,
-        },
-        body: JSON.stringify(body),
-      }).then(res => {
-        if(res.ok)
-          return res.json();
-        else {
-          logger.error(res);
-          return false;
-        }
-      });
-    }));
-  
-    // destroy session
-    promises.push(new Promise((resolve, reject) => {
-      session.destroy(function(err) {
-        if(err) reject(err);
-        else    resolve();
-      });
-    }));
-    
-    return Promise.all(promises);
-  },
-};
+    await session.commitTransaction();
+    return userInfo;
+  } catch(err) {
+    logger.error(err.stack);
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    // close session
+    session.endSession();
+  }
+}
 
 // Return the stack
 // currently default terms only
-function createStack(uid) {
-  const terms = exports.db.collection('terms');
-  const users = exports.db.collection('users');
-  return users.findOne({_id: uid})
-  .then(doc => {
-    const countingMapDefault = doc.countingMapDefault;
+async function createStack(uid) {
+  const terms = db.collection('terms');
+  const users = db.collection('users');
 
-    let curTotalNumTerms = 0;
-    for(const lvl in countingMapDefault)
-      curTotalNumTerms += countingMapDefault[lvl];
-    if(curTotalNumTerms > stackSize) {
-      //-- choose random terms --//
+  const doc = await users.findOne({_id: uid});
 
-      // build splitter
-      let splitter=[[0, 0]], splitterMax=0;
-      for(const lvl in countingMapDefault) {
-        const l = parseInt(lvl);
-        splitter.push([l, splitterMax+countingMapDefault[l]/l]);
-        splitterMax += countingMapDefault[l];
-      }
+  // default type for now
+  const countingMapDefault = doc.countingMap[conf.termTypes.default];
 
-      // get # of terms for each level
-      let numTerms = {};
-      for(var i=0;i<stackSize;) {
-        var x = Math.random()*splitterMax;
-
-        // find bucket
-        for(var p=1, q=splitter.length-1; p<=q;) {
-          var m = Math.floor((p+q)/2);
-          if(splitter[m-1][1] < x && x <= splitter[m][1]) {
-            const l = splitter[m][0];
-            if(!(l in numTerms) || numTerms[l] < countingMapDefault[l]) {
-              numTerms[l] = numTerms[l] + 1 || 1;
-              i++;
-            }
-            break;
-          } else {
-            if(x <= splitter[m-1][1])
-              q = m - 1;
-            else
-              p = m + 1;
-          }
-        }
-      }
-
-      // build stack
-      let promises = [];
-      for(const lvl in numTerms) {
-        promises.push(terms.find({uid, level:parseInt(lvl)})
-        .project({_id:1}).toArray()
-        .then(result => {
-          let sample=[];
-          if(numTerms[lvl] < result.length) {
-            let sampleSet = {};
-            // pick up numTerms[lvl] samples
-            for(var i=0;i<numTerms[lvl];) {
-              const x = Math.floor(Math.random()*result.length);
-              if(!(x in sampleSet)) {
-                sampleSet[x] = 1;
-                i++; 
-              }
-            }
-            for(var idx in sampleSet)
-              sample.push(result[idx]);
-          } else {
-            // pick up entire result
-            sample = result;
-          }
-          return sample;
-        }));
-      }
-      return Promise.all(promises).then(samples => {
-        var retval = [];
-        for(var r1 of samples) {
-          for(var r2 of r1)
-            retval.push(r2._id);
-        }
-        return retval;
-      });
-    } else {
-      return [];    // empty stack
+  let curTotalNumTerms = 0;
+  for(const lvl in countingMapDefault) {
+    curTotalNumTerms += countingMapDefault[lvl];
+  }
+  if(curTotalNumTerms >= stackSize) {
+    //-- choose random terms --//
+    // build splitter
+    let splitter=[[0, 0]], splitterMax=0;
+    for(const lvl in countingMapDefault) {
+      const l = parseInt(lvl);
+      splitter.push([l, splitterMax+countingMapDefault[l]/l]);
+      splitterMax += countingMapDefault[l];
     }
-  });
+
+    // get # of terms for each level
+    let numTerms = {};
+    for(var i=0;i<stackSize;) {
+      var x = Math.random()*splitterMax;
+
+      // find bucket
+      for(var p=1, q=splitter.length-1; p<=q;) {
+        var m = Math.floor((p+q)/2);
+        if(splitter[m-1][1] < x && x <= splitter[m][1]) {
+          const l = splitter[m][0];
+          if(!(l in numTerms) || numTerms[l] < countingMapDefault[l]) {
+            numTerms[l] = numTerms[l] + 1 || 1;
+            i++;
+          }
+          break;
+        } else {
+          if(x <= splitter[m-1][1])
+            q = m - 1;
+          else
+            p = m + 1;
+        }
+      }
+    }
+
+    // build stack
+    let proms = [];
+    for(const lvl in numTerms) {
+      proms.push(terms.find({uid, level:parseInt(lvl)})
+      .project({_id:1}).toArray()
+      .then(result => {
+        let sample=[];
+        if(numTerms[lvl] < result.length) {
+          let sampleSet = {};
+          // pick up numTerms[lvl] samples
+          let i=0;
+          for(;i<numTerms[lvl];) {
+            const x = Math.floor(Math.random()*result.length);
+            if(!(x in sampleSet)) {
+              sampleSet[x] = 1;
+              i++; 
+            }
+          }
+          for(const idx in sampleSet)
+            sample.push(result[idx]);
+        } else {
+          // pick up entire result
+          sample = result;
+        }
+        return sample;
+      }));
+    }
+    const samples = await Promise.all(proms);
+    let retval = [];
+    for(var r1 of samples) {
+      for(var r2 of r1) {
+        retval.push(r2._id);
+      }
+    }
+    return retval;
+  } else {
+    return [];    // empty stack
+  }
 }
 
 // compose & send practice, test notification
-function workerFunction(uid) {
-  const stacks = exports.db.collection('stacks');
-  return stacks.findOne({uid}).then(doc => {
+async function workerFunction(uid) {
+  const stacks = db.collection('stacks');
+  const doc = await stacks.findOne({uid});
+
+  try {
     // check no stack
     if(!doc) {
       clearWorker(uid);
@@ -755,36 +976,32 @@ function workerFunction(uid) {
     const {curNotifiedCount} = doc;
 
     // build msg
-    let msg;
     if(curNotifiedCount >= nTotalNoti) {
-      //-- send test msg --//
-      msg = {
-        notiType: exports.notiTypes.test,
-        stackId,
-      };
+      //-- test --//
+      // send
+      await exports.sendMsg(uid, conf.notiTypes.test, {stackId});
+  
+      // cleaning up
+      clearWorker(uid);
+      stacks.deleteOne({uid});
     } else {
-      //-- send practice msg --//
+      //-- practice --//
+      // set current indice
       const curIndices = [];
-      let i = (curNotifiedCount * nTermsNoti) % stackSize;
-      for(var j=0;j<nTermsNoti;j++) {
+      let j, i = (curNotifiedCount * nTermsNoti) % stackSize;
+      for(j=0;j<nTermsNoti;j++) {
         curIndices.push((i+j) % stackSize);
       }
-      msg = {
-        notiType: exports.notiTypes.practice,
-        stackId,
-        curIndices,
-      };
-    }
 
-    // send
-    return exports.sendMsg(uid, msg)
-    .then(() => {
-      // increment notification counter
-      return stacks.updateOne({uid}, {$set: {
-        curNotifiedCount: curNotifiedCount+1,
-      }})
-    });
-  });
+      // send
+      await exports.sendMsg(uid, conf.notiTypes.practice, {stackId, curIndices});
+    }
+    
+    // increment notification counter
+    await stacks.updateOne({uid}, {$set: {
+      curNotifiedCount: curNotifiedCount+1,
+    }});
+  } catch(err) {logger.error(err.stack)}
 }
 
 function setWorker(uid, obj) { workers[uid] = obj }
@@ -794,36 +1011,218 @@ function clearWorker(uid) {
   delete workers[uid];
 }
 
-function sendToGroup(notificationKey, data) {
+async function sendToGroup(notificationKey, data) {
   const body = {to: notificationKey, data};
-  return fetch('https://fcm.googleapis.com/fcm/send', { 
+  const res = await fetch('https://fcm.googleapis.com/fcm/send', { 
     method: 'post',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': 'key=' + env.FCM_SERVER_KEY,
     },
     body: JSON.stringify(body),
-  }).then(res => {
-    if(res.ok)
-      return res.json();
-    else {
-      logger.error(res);
-      return {success: 0, failure: 0};
-    }
   });
+  if(res.ok)  return res.json();
+  else {
+    logger.error(res);
+    return {success: 0, failure: 0};
+  }
 }
 
-function retreiveNotificationKey(uid) {
-  return fetch('https://fcm.googleapis.com/fcm/notification?notification_key_name='+uid, {
+async function retreiveNotificationKey(uid) {
+  const res = await fetch('https://fcm.googleapis.com/fcm/notification?notification_key_name='+uid, {
     method: 'get',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': 'key=' + env.FCM_SERVER_KEY,
       'project_id': env.FCM_SENDER_ID,
     },
-  }).then(res => {
-    return (res.ok) ? res.json() : {notification_key: null};
-  }).then(json => {return json.notification_key});
+  });
+  const json = (res.ok) ? await res.json() : {notification_key: null};
+  return json.notification_key;
 }
+
+function combineLevelChanges(results) {
+  let countingMapChanges = {};
+
+  // init
+  for(const termType of Object.keys(conf.termTypes)) {
+    countingMapChanges[termType] = {};
+  }
+
+  // process
+  for(const result of results) {
+    if(result) {    // This is needed as some query may return null
+      let countingMapChange = countingMapChanges[result.type];
+      const changes = result.changes;
+
+      for(const level of Object.keys(changes)) {
+        if(countingMapChange[level]) {
+          countingMapChange[level] += changes[level];
+        } else {
+          countingMapChange[level] = changes[level];
+        }
+      }
+    }
+  }
+
+  // trim
+  for(const termType of Object.keys(countingMapChanges)) {
+    exports.trimCountingMap(countingMapChanges[termType]);
+  }
+  
+  return countingMapChanges;
+}
+
+async function updateUserInfo(uid, session, options) {
+  const users = db.collection('users');
+  let doc = await users.findOne({_id: uid}, {session});
+  
+  if(!doc)  throw new Error('No matching user');
+
+  // last timestamps
+  if(options.lastTimestamps) {
+    let docLTS = doc.lastTimestamps;
+    const optLTS = options.lastTimestamps;
+    for(const type in optLTS) {
+      if(docLTS[type] < optLTS[type]) {
+        docLTS[type] = optLTS[type]
+      }
+    }
+    doc.lastTimestamps = docLTS;
+  }
+
+  // counting map
+  if(options.countingMapChanges) {
+    const optCntMapChgs = options.countingMapChanges;
+    for(const termType in optCntMapChgs) {
+      const countingMapChange = optCntMapChgs[termType];
+      if(Object.keys(countingMapChange).length > 0) {
+        // merge & trim
+        exports.mergeCountingMaps(
+          doc.countingMap[termType],
+          countingMapChange
+        );
+        exports.trimCountingMap(doc.countingMap[termType]);
+      }
+    }
+  }
+
+  // add checksums
+  if(options.addChecksums) {
+    const optAddChecksums = options.addChecksums;
+    for(const type in optAddChecksums) {
+      let docCS = doc.checksums[type];
+      for(const optionCS of optAddChecksums[type]) {
+        docCS = cs.addChecksum(docCS, optionCS);
+      }
+      doc.checksums[type] = docCS;
+    }
+  }
+
+  // subtract checksums
+  if(options.subChecksums) {
+    const optSubChecksums = options.subChecksums;
+    for(const type in optSubChecksums) {
+      let docCS = doc.checksums[type];
+      for(const optionCS of optSubChecksums[type]) {
+        docCS = cs.subChecksum(docCS, optionCS);
+      }
+      doc.checksums[type] = docCS;
+    }
+  }
+
+  return users.updateOne({_id: uid}, {$set: doc}, {session});
+}
+
+function setScheduler(uid, doPractice, alarmClock, enabledDays) {
+  const stacks = db.collection('stacks');
+  
+  // clear previous schedule
+  if(uid in schedules) {
+    schedules[uid].cancel();
+  }
+  clearWorker(uid);
+
+  // check it is to run scheduler
+  if(!doPractice || enabledDays.every(x => {return !x})) {
+    delete schedules[uid];
+    clearWorker(uid);
+    return;
+  }
+
+  // create rule
+  const offset = new Date().getTimezoneOffset();    // offset to UTC
+  alarmClock = (24*60 + alarmClock - offset) % (24*60);     // local time. Range: [0, 24*60)
+  const hour = Math.floor(alarmClock / 60);
+  const minute = alarmClock % 60;
+  let rule = minute + ' ' + hour + ' * * ';
+  if(enabledDays.every(x => {return x})) {
+    rule += '*';
+  } else {
+    for(var i=0;i<7;i++) {
+      if(enabledDays[i])
+        rule += i+',';
+    }
+    rule = rule.substring(0, rule.length-1);
+  }
+
+  
+  // set schedule
+  schedules[uid] = schedule.scheduleJob(rule, async () => {
+    const session = cli.startSession();
+    session.startTransaction();
+
+    try {
+      // create a stack
+      const stack = await createStack(uid);
+      if(stack.length < stackSize) {
+        //-- not enough terms --//
+        // demand at least <stackSize> terms
+        const data = {
+          msg: 'Set at least ' + stackSize + ' terms to kick off!',
+        };
+        exports.sendMsg(uid, conf.notiTypes.announcement, data);
+        return;
+      } else {
+        //-- enough terms --//
+        const timestamp = Date.now();
+
+        // save the stack
+        await stacks.insertOne({
+          uid,
+          curNotifiedCount: 0,
+          stack,
+          timestamp,
+        }, {session});
+
+        // maintain auxilary variables
+        const options = { lastTimestamps: {} };
+        options.lastTimestamps[conf.timestampFields.stack] = timestamp;
+        await updateUserInfo(uid, session, options);
+
+        await session.commitTransaction();
+      }
+  
+      // run initial execution
+      workerFunction(uid);
+  
+      // set worker
+      clearWorker(uid);
+      setWorker(uid, setInterval(() => {
+        workerFunction(uid);
+      }, notiInterval*60*1000));
+    } catch(err) {
+      logger.error(err.stack);
+      await session.abortTransaction();
+    } finally {
+      // close session
+      session.endSession();
+    }
+  });
+};
+
+function hashPassword(password) {
+  return crypto.createHmac('sha1', secret).update(password).digest('hex');
+};
 
 module.exports = exports;

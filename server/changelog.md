@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 (2019.2.9)
+- implemented synchronization improving user's experience
+- implemented transactions on server-side(now require MongoDB >= 4.0)
+- modified term type values
+
 ## 0.1.1 (2018.12.2)
 - bug fix: unable to take a test
 - bug fix: no reply from server when modifying a term

@@ -1,461 +1,1002 @@
 import firebase from "firebase/app";
 import 'firebase/firebase-messaging';
 import packageJson from '../package.json';
+import crypto from 'crypto';
+import conf from './lib/conf';
+import mydb from './lib/mydb';
+import csv from 'fast-csv';
+import fileReaderStream from 'filereader-stream';
 
-var exports = {
+const bulkSize = 5;                  // how many terms we should deal with at once?
+
+const exports = {
   isTokenRegistered: false,
+  refreshTermList: () => {},          // will be replaced also
+};
 
-  init: () => {
-    if(packageJson.serverAddress[packageJson.serverAddress.length-1] === '/')
-      exports.serverAddress = packageJson.serverAddress.substr(0, packageJson.serverAddress.length-1);
-    else
-      exports.serverAddress = packageJson.serverAddress;
+exports.init = () => {
+  let proms = [];
 
-    // Firebase
-    firebase.initializeApp({
-      messagingSenderId: packageJson.firebaseMessagingSenderId,
-    });
+  if(packageJson.serverAddress[packageJson.serverAddress.length-1] === '/')
+    exports.serverAddress = packageJson.serverAddress.substr(0, packageJson.serverAddress.length-1);
+  else
+    exports.serverAddress = packageJson.serverAddress;
 
-    // FCM
-    if(firebase.messaging.isSupported()) {
-      exports.messaging = firebase.messaging();
-      exports.messaging.usePublicVapidKey(packageJson.firebaseWebPushKeyPublic);
-      exports.messaging.onTokenRefresh(() => this.getToken());
-    } else {
-      exports.messaging = null;
+  // Firebase 
+  proms.push(firebase.initializeApp({
+    messagingSenderId: packageJson.firebaseMessagingSenderId,
+  }));
+
+  // FCM
+  if(firebase.messaging.isSupported()) {
+    exports.messaging = firebase.messaging();
+    exports.messaging.usePublicVapidKey(packageJson.firebaseWebPushKeyPublic);
+    exports.messaging.onTokenRefresh(() => this.getToken());
+  } else {
+    exports.messaging = null;
+  }
+
+  // indexedDB
+  proms.push(mydb.open());
+
+  // communication with service worker
+  // port1: client receiving
+  // port2: SW receiving
+  // const msgChannel = new MessageChannel();
+  // msgChannel.port1.onmessage = onMessageFromSW;
+  // console.log(navigator.serviceWorker.controller);
+  // navigator.serviceWorker.controller.postMessage(msgChannel.port2);
+  // setTimeout(() => {
+  // }, 10000);
+
+  return Promise.all(proms);
+};
+
+exports.setFunction = (funcName, func) => {exports[funcName] = func};
+
+// Check if lastTimestamps are the same with ones in the server
+exports.checkSync = async () => {
+  const srvAuxInfos = await getSrvAuxInfos();
+  const srvLastTSs = srvAuxInfos.lastTimestamps;
+  const srvChecksums = srvAuxInfos.checksums;
+
+  const {tx, terms, others, syncs} = await mydb.getObjectStores(
+    ['terms', 'others', 'syncs'], 'readwrite'
+  );
+
+  try {
+    let cliLastTSs = await others.get('lastTimestamps');
+    let cliChecksums = await others.get('checksums');
+  
+    // terms
+    if(cliLastTSs.terms < srvLastTSs.terms) {
+      //-- new update from the server --//
+      updateTermsFromServer();
+    } else if(cliLastTSs.terms > srvLastTSs.terms
+      || srvChecksums.terms !== cliChecksums.terms) {
+      //-- possibly panic --//
+      // check if syncing is in process
+      let syncCount = await syncs.index('type').count(conf.syncTypes.setTerm);
+      syncCount += await syncs.index('type').count(conf.syncTypes.delTerm);
+      
+      if(syncCount === 0) {
+        //-- panic --//
+        // clear all terms
+        await terms.clear();
+
+        // init terms checksum
+        cliChecksums.terms = conf.defaultValues.checksums.terms;
+        await others.put(cliChecksums);
+        
+        // init last timestamp
+        cliLastTSs[conf.timestampFields.terms] = 0;
+        await others.put(cliLastTSs);
+
+        // fetch all from the server
+        updateTermsFromServer();
+      }
     }
-  },
-
-  setFunction: (funcName, func) => {exports[funcName] = func},
-
-  getCurrentUser: () => {
-    return fetch(exports.serverAddress + '/getCurrentUser', {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  getToken: () => {
-    // Get Instance ID token. Initially this makes a network call, once retrieved
-    // subsequent calls to getToken will return from cache.
-    return exports.messaging.getToken().then(token => {
-      if(token) {
-        return fetch(exports.serverAddress + '/setToken', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({token}),
-        }).then(res => {
-          return (res.ok) ? res.json() : {result: false};
-        }).then(data => {
-          if(data.result) {
-            exports.isTokenRegistered = true;
-            return true;
-          } else {
-            throw data.msg || 'Annoyer server error';
-          }
-        }).catch(err => {
-          // core.showMainNotification('Notification is blocked. You cannot receive the alarm.', 'info', 0);
-          console.error(err);
-          throw err;
-        });
-      } else {
-        console.error('No Instance ID token available. Request permission to generate one.');
-      }
-    }).catch(err => {
-      console.error('An error occurred while retrieving token. ', err);
-    });
-  },
-
-  // register to both Pushy and Annoyer server
-  registerToken: () => {
-    // already registered?
-    if(exports.isTokenRegistered) {
-      return new Promise((resolve, reject) => {return resolve()});
-    }
-
-    // not supported?
-    if(!exports.messaging)
-      throw 'Messaging is not supported.';
-
-    // do
-    return exports.messaging.requestPermission().then(() => {
-      console.log('Notification permission granted.');
-      exports.getToken();
-    }).catch(err => {
-      console.error('Unable to get permission to notify.', err);
-    });
-  },
-
-  closeAccount: () => {
-    return fetch(exports.serverAddress + '/closeAccount', {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    }).then(res => {
-      exports.isTokenRegistered = false;
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  getTerm: (_id) => {
-    return fetch(exports.serverAddress + '/getTerm', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({_id: _id}),
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    }).then(data => {
-      return (data.result) ? data.term : null;
-    });
-  },
-
-  getTermList: () => {
-    return fetch(exports.serverAddress + '/getTermList', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({sortBy: 'term'}),
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  setTerm: (term, isModifying) => {
-    return fetch(exports.serverAddress + '/setTerm', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({term, isModifying}),
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  delTerms: (termIDs) => {
-    return fetch(exports.serverAddress + '/delTerms', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({termIDs: termIDs}),
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  getStack: (stackId) => {
-    return fetch(exports.serverAddress + '/getStack', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({stackId: stackId})
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  getSettings: () => {
-    return fetch(exports.serverAddress + '/getSettings', {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  setSettings: (settings) => {
-    return fetch(exports.serverAddress + '/setSettings', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(settings),
-    }).then((res) => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  login: (email, password) => {
-    return fetch(exports.serverAddress + '/login', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({email, password}),
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  register: (email, password, passwordRepeat) => {
-    return fetch(exports.serverAddress + '/register', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({email, password, passwordRepeat}),
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  logout: () => {
-    return fetch(exports.serverAddress + '/logout', {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    }).then(res => {
-      exports.isTokenRegistered = false;
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  applyTestResults: (testResults) => {
-    return fetch(exports.serverAddress + '/applyTestResult', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({testResults: testResults}),
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  restore: (csvFile) => {
-    const formData = new FormData();
-    formData.append('file', csvFile);
-
-    return fetch(exports.serverAddress + '/restore', {
-      method: 'POST',
-      credentials: 'include',
-      body: formData,
-    }).then(res => {
-      return (res.ok) ? res.json() : {result: false};
-    });
-  },
-
-  backup: () => {
-    return fetch(exports.serverAddress + '/backup', {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        'Accept': 'text/csv',
-        'Content-Type': 'application/json',
-      },
-    }).then(res => {
-      return (res.ok) ? res.text() : '';
-    });
-  },
-
-  // input: term, ex
-  // output: blankified ex which
-  //    1. maximizes the # of matched word chunks
-  //    2. minimizes the distance between the end and the begin of blankified word
-  //
-  // strategy
-  // * split term and ex into words, respectively, and then plot them into a plane.
-  // * the coordinates are the index in the each list
-  // * Note that a word doesn't necessarily correspond to one y coodinate
-  //   as a word may be used more than once. ex: as well as
-  // * x-axis is words of ex, and y-axis is words of term
-  // * the correct answer is a set of points whose y coordinates are strictly increasing
-  //   when sorted by x coordinates in ascending order.
-  // * we start scanning ㅈ적기 귀ㅏㄴㅎ.ㅇ..ㄴ
-  blankify: (term, ex) => {
-    const BLANK = '___';
-
-    // sentence => list of words
-    function parseSentence(sentence, needVariants) {
-      function isWord(c) {
-        const code = c.charCodeAt(0);
-        return (0x41 <= code && code <= 0x5A) || (0x61 <= code && code <= 0x7A) || 0x80 <= code;
-      }
-      let i, word = '';
-      sentence += '.';    // sentinel for getting last word
-      let coordinate = [];
-      for(i=0;i<sentence.length;i++) {
-        if(isWord(sentence[i])) {
-          word += sentence[i];
-        } else if(word !== '') {
-          // found a word
-          let coord = {idx: i-word.length, word};
-          if(needVariants) {
-            let l = [];   // list of variants of word
-            if(word.endsWith('y')) {
-              // study => I studied.
-              l.push(word.substring(0, word.length-1)+'ies');
-            } else if(word.endsWith('sis')) {
-              // basis => Composing bases.
-              l.push(word.substring(0, word.length-2)+'es');
-            } else if(word.endsWith('e')) {
-              // take => He is taking it away.
-              l.push(word.substring(0, word.length-1)+'ing');
-            }
-            l.push(word + word[word.length-1] + 'ed');
-            l.push(word + 'ed');
-            l.push(word + word[word.length-1] + 'ing');   // shop => I was shopping.
-            l.push(word + 'ing');
-            l.push(word + 's');       // say => He says blah.
-            l.push(word + 'd');       // ace => You aced the course.
-            l.push(word);      // original one should be compared lastly
-            coord.variants = l;
-          }
-          coordinate.push(coord);
-          word = '';
-        }
-      }
-      return coordinate;
-    };
-
-    // check if there is a point in (y1 < y < y2) among the left points
-    function isPointExistsBetween(y1, y2) {
-      let i;
-      for(i=y1+1;i<y2;i++) {
-        if(pointCounter[i] > 0)
-          return false;
-      }
-      return true;
-    };
-
-    // return if the left point is better than the right one
-    function isLeftBetter(left, right) {
-      if(left.cnt > right.cnt)
-        return true;
-      else if(left.cnt < right.cnt)
-        return false;
-      else if(left.startX > right.startX)
-        return true;
-      else
-        return false;
-    };
-
-    let pointId = 0;
-    function point(x, y, cnt, startX, prevId) {
-      return {pointId: pointId++, x, y, cnt, startX, prevId};
-    };
     
-    let i, j;
-
-    // setup
-    const X = parseSentence(ex.toLowerCase(), false);
-    const Y = parseSentence(term.toLowerCase(), true);
-    let wordToY = {};
-    let pointCounter = [...Array(Y.length)].fill(0);    // per y coordinate
-    for(i=0;i<Y.length;i++) {
-      let variant;
-      for(variant of Y[i].variants) {
-        // wordToY
-        if(wordToY[variant])
-          wordToY[variant].push(i);
-        else
-          wordToY[variant] = [i];
-      }
-
-      // pointCounter
-      pointCounter[i]++;
+    // stack
+    // There's no case of (cliLastTSs.stack >= srvLastTSs.stack)
+    // as the stack is generated by the serer only.
+    if(cliLastTSs.stack < srvLastTSs.stack) {
+      //-- new update from the server --//
+      getStackFromServer();
     }
+  
+    // settings
+    if(cliLastTSs.settings < srvLastTSs.settings) {
+      //-- new update from the server --//
+      getSettingsFromServer();
+    } else if(cliLastTSs.settings > srvLastTSs.settings) {
+      //-- possibly panic --//
+      const syncCount = await syncs.index('type').count(conf.syncTypes.setSettings);
+      
+      if(syncCount === 0) {
+        //-- panic --//
+        // init last timestamp
+        cliLastTSs[conf.timestampFields.settings] = 0;
+        await others.put(cliLastTSs);
 
-    // get the answer
-    let candidates = {};    // {pointId: point}, points that will be connected to future point
-    let gOptimum = point(-1, -1, 0, -1, -1);  // the pointId of the end of final blank list
-    let finishedPoints = {};   // {pointId: point}, points whose optimum of each is acquired
-    finishedPoints[-1] = point(-1, -1, 0, -1, -1);   // sentinel
-    for(i=0;i<X.length;i++) {
-      let word = X[i].word, toDel = {};
-      if(wordToY[word]) {   // check if word need to be check for being blankified
-        for(j of wordToY[word]) {
-          // pick up optimum among candidates
-          let optimum = point(-1, -1, 0, -1, -1), pId;
-          for(pId in candidates) {
-            let candidate = candidates[pId];
-            if(candidate.y < j && isLeftBetter(candidate, optimum)) {
-              // found better optimum
-              optimum = candidate;
-              if(!isPointExistsBetween(candidate.y, j))
-                toDel[candidate.pointId] = true;
-            }
-          }
-    
-          // picked optimum + current word
-          let combined = point(
-            i, j, optimum.cnt+1,
-            (optimum.cnt > 0) ? optimum.startX : i,
-            (optimum.cnt > 0) ? optimum.pointId : -1);
-          candidates[combined.pointId] = combined;
-          finishedPoints[combined.pointId] = combined;
-          pointCounter[j]--;
-    
-          // update global optimum
-          if(isLeftBetter(combined, gOptimum))
-            gOptimum = combined;
-        }
-        for(j in toDel)
-          delete candidates[j];
+        // fetch all from the server
+        getSettingsFromServer();
       }
     }
+  } catch(err) {
+    console.error('aborting:', err);
+    tx.abort();
+    throw err;
+  }
+};
 
-    // generate blankified ex
-    let p = gOptimum, idx, l;
-    let blankifiedEx = ex;
-    while(p.cnt > 0) {
-      idx = X[p.x].idx;
-      l = X[p.x].word.length;
-      blankifiedEx = blankifiedEx.substring(0, idx) + BLANK + blankifiedEx.substring(idx+l);
-      p = finishedPoints[p.prevId];
-    }
+// client DB -> server
+// taking advantage of concurrency of idb brings error
+exports.sync = async () => {
+  const {syncs} = await mydb.getObjectStores('syncs');
+  let syncInfo, syncInfos;
 
-    return blankifiedEx;
-  },
+  // terms(add)
+  syncInfos = await syncs.index('type').getAll(conf.syncTypes.setTerm);
+  syncSetTerm(syncInfos);
+  
+  // terms(del)
+  syncInfos = await syncs.index('type').getAll(conf.syncTypes.delTerm);
+  syncDelTerm(syncInfos);
+  
+  // settings
+  syncInfo = await syncs.index('type').get(conf.syncTypes.setSettings);
+  syncSettings(syncInfo);
+  
+  // apply test results
+  syncInfos = await syncs.index('type').getAll(conf.syncTypes.applyTestResults);
+  syncApplyTestResults(syncInfos);
+  
+  exports.refreshTermList();
+};
 
-  isObjectEmpty: (obj) => {
-    for(const _ in obj)
+exports.getToken = async () => {
+  // Get Instance ID token. Initially this makes a network call, once retrieved
+  // subsequent calls to getToken will return from cache.
+  try {
+    // get token
+    const token = await exports.messaging.getToken();
+    if(!token) {
+      console.error('No Instance ID token available. Request permission to generate one.');
       return false;
+    }
+
+    // send request
+    const req = fetch(exports.serverAddress + '/setToken', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({token}),
+    });
+    await decapsulateJson(req);
+    exports.isTokenRegistered = true;
+    console.log('Token is registered.');
+  } catch(err) {
+    console.error('An error occurred while retrieving token. ', err);
+  }
+};
+
+// register to both push and Annoyer server
+exports.registerToken = async () => {
+  // already registered?
+  if(exports.isTokenRegistered) return;
+
+  // not supported?
+  if(!exports.messaging) {
+    throw new Error('Messaging is not supported.');
+  }
+
+  // do
+  try {
+    await exports.messaging.requestPermission();
+    console.log('Notification permission granted.');
+    await exports.getToken();
+  } catch(err) {
+    console.error('Unable to get permission to notify.', err);
+    throw err;
+  }
+};
+
+exports.closeAccount = async () => {
+  try {
+    // server part
+    const req = fetch(exports.serverAddress + '/closeAccount', {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+    });
+    await decapsulateJson(req);
+
+    // push token
+    exports.isTokenRegistered = false;
+
+    // client
+    await mydb.initDB(true);
+  } catch(err) {
+    console.error(err);
+  }
+};
+
+// client DB -> user
+// Return null if failed
+exports.getTerm = async _id => {
+  const {terms} = await mydb.getObjectStores('terms');
+  if(_id.startsWith(conf.tmpIdPrefixes.term)) {
+    //-- temp ID --//
+    return terms.index('tmpId').get(_id);
+  } else {
+    //-- _id generated by server --//
+    return terms.get(_id);
+  }
+};
+
+// Look up client storage only.
+// Fetching from the server on vacancy is 
+// discouraged as it will impact the performance negatively.
+exports.getTermList = async () => {
+  const {terms} = await mydb.getObjectStores('terms');
+  return terms.index('term').getAll();
+};
+
+// user -> client DB
+// timestamp must be already embedded in termInfo
+exports.setTerms = async termInfos => {
+  termInfos = arraify(termInfos);
+  const {tx, terms, others, syncs} = await mydb.getObjectStores(
+    ['terms', 'others', 'syncs'], 'readwrite'
+  );
+
+  try {
+    let syncInfos = [];
+    for(const termInfo of termInfos) {
+      // set timestamp
+      termInfo.timestamp = Date.now();
+
+      // If new one, generate a temporary Id
+      if(!termInfo._id) {
+        termInfo._id = termInfo.tmpId = createTempId();
+      }
+      
+      // build syncInfos
+      syncInfos.push({
+        _id: termInfo._id,
+        type: conf.syncTypes.setTerm,
+        timestamp: termInfo.timestamp,
+      });
+    }
+
+    // put to client DB
+    await mydb.putIfNew(
+      conf.timestampFields.terms, termInfos, terms, others
+    );
+
+    // sync
+    await mydb.putIfNew(
+      conf.timestampFields.sync, syncInfos, syncs, others
+    );
+  } catch(err) {
+    console.error('aborting:', err);
+    tx.abort();
+    throw err;
+  }
+};
+
+// user -> client DB
+exports.delTerms = async termIDs => {
+  const {tx, terms, others, syncs} = await mydb.getObjectStores(
+    ['terms', 'others', 'syncs'], 'readwrite'
+  );
+  
+  try {
+    const timestamp = Date.now();
+    let records = [];
+    for(const termId of termIDs) {
+      records.push({
+        _id: termId,
+        timestamp,
+        type: conf.syncTypes.delTerm,
+      });
+    }
+
+    // delete one in client DB
+    await mydb.delIfOld(
+      conf.timestampFields.terms, records, terms, others
+    );
+
+    // sync
+    await mydb.putIfNew(
+      conf.timestampFields.sync, records, syncs, others
+    );
+  } catch(err) {
+    console.error('aborting:', err);
+    tx.abort();
+    throw err;
+  }
+};
+
+// look up client storage, then server one
+// Return null if failed
+exports.getStack = async stackId => {
+  // lookup on client
+  const {others} = await mydb.getObjectStores('others');
+  const stackInfo = await others.get('stack');
+
+  // found in client-side
+  if(stackInfo && stackInfo._id === stackId) return stackInfo;
+
+  // try server-side
+  return getStackFromServer(stackId);
+};
+
+// look up client storage, then server one
+// Return null if failed
+exports.getSettings = async () => {
+  // lookup on client
+  const {others} = await mydb.getObjectStores('others');
+  const settingsInfo = await others.get('settings');
+
+  // found in client-side
+  if(settingsInfo) return settingsInfo;
+
+  // try server-side
+  return getSettingsFromServer();
+};
+
+exports.setSettings = async settingsInfo => {
+  const {tx, syncs, others} = await mydb.getObjectStores(['syncs', 'others'], 'readwrite');
+  
+  try {
+    // timestamp
+    settingsInfo.timestamp = Date.now();
+
+    // client DB
+    await mydb.putIfNew(conf.timestampFields.settings, settingsInfo, others, others);
+    
+    // sync for server
+    const syncInfo = Object.assign(settingsInfo, {
+      _id: conf.syncTypes.setSettings,
+      type: conf.syncTypes.setSettings,
+    });
+    await mydb.putIfNew(conf.timestampFields.sync, syncInfo, syncs, others);
+  } catch(err) {
+    console.error(err);
+    tx.abort();
+    throw err;
+  }
+
+  // do sync
+  exports.sync();
+};
+
+exports.register = async (email, password, passwordRepeat) => {
+  const req = fetch(exports.serverAddress + '/register', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({email, password, passwordRepeat}),
+  });
+  await decapsulateJson(req);
+  //-- success --//
+  const {tx, others} = await mydb.getObjectStores('others', 'readwrite');
+  try {
+    // set email
+    let settingsInfo = await others.get('settings');
+    settingsInfo.email = email;
+    await others.put(settingsInfo);
+  } catch(err) {
+    console.error(err);
+    tx.abort();
+    throw err;
+  }
+};
+
+exports.login = async (email, password) => {
+  const req = fetch(exports.serverAddress + '/login', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({email, password}),
+  });
+  await decapsulateJson(req);
+  //-- success --//
+  // check sync
+  exports.checkSync();
+
+  // push token
+  exports.registerToken().catch(err => exports.showMainNotification(err.message, 'error', 0));
+
+  // set email
+  const {tx, others} = await mydb.getObjectStores('others', 'readwrite');
+  try {
+    // sync for server
+    let settingsInfo = await others.get('settings');
+    settingsInfo.email = email;
+    await others.put(settingsInfo);
+  } catch(err) {
+    console.error(err);
+    tx.abort();
+    throw err;
+  }
+};
+
+exports.logout = async () => {
+  // client
+  await mydb.initDB(true);
+
+  // server
+  fetch(exports.serverAddress + '/logout', {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+  });
+
+  // push token
+  exports.isTokenRegistered = false;
+};
+
+exports.checkLogin = async () => {
+  const {others} = await mydb.getObjectStores('others');
+  const doc = await others.get('settings');
+  return doc && doc.email;
+};
+
+exports.applyTestResults = async (stackId, testResults) => {
+  const {tx, syncs, others} = await mydb.getObjectStores(
+    ['syncs', 'others'], 'readwrite'
+  );
+  
+  try {
+    const timestamp = Date.now();
+    // sync
+    const syncInfo = {
+      _id: stackId,
+      type: conf.syncTypes.applyTestResults,
+      testResults,
+      timestamp,
+    };
+    await mydb.putIfNew(conf.timestampFields.sync, syncInfo, syncs, others);
+
+    // last timestamp
+    await mydb.updateLastTimestamp(others, {testResults: timestamp});
+  } catch(err) {
+    console.error(err);
+    tx.abort();
+    throw err;
+  }
+
+  // do sync
+  exports.sync();
+};
+
+exports.restore = async csvFile => {
+  // save to client DB
+  let buf = [], proms = [];
+
+  await new Promise((resolve, reject) => {
+    const readStream = fileReaderStream(csvFile)
+    .pipe(
+      csv({headers: true})
+      .on("data", doc => {
+        // check validity
+        if(!(doc.type in conf.termTypes)) {
+          reject('invalid term type');
+        }
+
+        buf.push(doc);
+        if(buf.length >= bulkSize) {
+          proms.push(exports.setTerms(buf));
+          buf = [];
+        }
+      })
+      .on("end", async () => {
+        if(buf.length) {
+          proms.push(exports.setTerms(buf));
+        }
+        readStream.destroy();
+        await Promise.all(proms);
+        resolve();
+      })
+    );
+  });
+  
+  // upload to server
+  exports.sync();
+};
+
+exports.backup = async () => {
+  const res = await fetch(exports.serverAddress + '/backup', {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Accept': 'text/csv',
+      'Content-Type': 'application/json',
+    },
+  });
+  return (res.ok) ? res.text() : '';
+};
+
+// input: term, ex
+// output: blankified ex which
+//    1. maximizes the # of matched word chunks
+//    2. minimizes the distance between the end and the begin of blankified word
+//
+// strategy
+// * split term and ex into words, respectively, and then plot them into a plane.
+// * the coordinates are the index in the each list
+// * Note that a word doesn't necessarily correspond to one y coodinate
+//   as a word may be used more than once. ex: as well as
+// * x-axis is words of ex, and y-axis is words of term
+// * the correct answer is a set of points whose y coordinates are strictly increasing
+//   when sorted by x coordinates in ascending order.
+// * we start scanning ㅈ적기 귀ㅏㄴㅎ.ㅇ..ㄴ
+exports.blankify = (term, ex) => {
+  const BLANK = '___';
+
+  // sentence => list of words
+  function parseSentence(sentence, needVariants) {
+    function isWord(c) {
+      const code = c.charCodeAt(0);
+      return (0x41 <= code && code <= 0x5A) || (0x61 <= code && code <= 0x7A) || 0x80 <= code;
+    }
+    let i, word = '';
+    sentence += '.';    // sentinel for getting last word
+    let coordinate = [];
+    for(i=0;i<sentence.length;i++) {
+      if(isWord(sentence[i])) {
+        word += sentence[i];
+      } else if(word !== '') {
+        // found a word
+        let coord = {idx: i-word.length, word};
+        if(needVariants) {
+          let l = [];   // list of variants of word
+          if(word.endsWith('y')) {
+            // study => I studied.
+            l.push(word.substring(0, word.length-1)+'ies');
+          } else if(word.endsWith('sis')) {
+            // basis => Composing bases.
+            l.push(word.substring(0, word.length-2)+'es');
+          } else if(word.endsWith('e')) {
+            // take => He is taking it away.
+            l.push(word.substring(0, word.length-1)+'ing');
+          }
+          l.push(word + word[word.length-1] + 'ed');
+          l.push(word + 'ed');
+          l.push(word + word[word.length-1] + 'ing');   // shop => I was shopping.
+          l.push(word + 'ing');
+          l.push(word + 's');       // say => He says blah.
+          l.push(word + 'd');       // ace => You aced the course.
+          l.push(word);      // original one should be compared lastly
+          coord.variants = l;
+        }
+        coordinate.push(coord);
+        word = '';
+      }
+    }
+    return coordinate;
+  };
+
+  // check if there is a point in (y1 < y < y2) among the left points
+  function isPointExistsBetween(y1, y2) {
+    let i;
+    for(i=y1+1;i<y2;i++) {
+      if(pointCounter[i] > 0)
+        return false;
+    }
     return true;
-  },
+  };
+
+  // return if the left point is better than the right one
+  function isLeftBetter(left, right) {
+    if(left.cnt > right.cnt)
+      return true;
+    else if(left.cnt < right.cnt)
+      return false;
+    else if(left.startX > right.startX)
+      return true;
+    else
+      return false;
+  };
+
+  let pointId = 0;
+  function point(x, y, cnt, startX, prevId) {
+    return {pointId: pointId++, x, y, cnt, startX, prevId};
+  };
+  
+  let i, j;
+
+  // setup
+  const X = parseSentence(ex.toLowerCase(), false);
+  const Y = parseSentence(term.toLowerCase(), true);
+  let wordToY = {};
+  let pointCounter = [...Array(Y.length)].fill(0);    // per y coordinate
+  for(i=0;i<Y.length;i++) {
+    let variant;
+    for(variant of Y[i].variants) {
+      // wordToY
+      if(wordToY[variant])
+        wordToY[variant].push(i);
+      else
+        wordToY[variant] = [i];
+    }
+
+    // pointCounter
+    pointCounter[i]++;
+  }
+
+  // get the answer
+  let candidates = {};    // {pointId: point}, points that will be connected to future point
+  let gOptimum = point(-1, -1, 0, -1, -1);  // the pointId of the end of final blank list
+  let finishedPoints = {};   // {pointId: point}, points whose optimum of each is acquired
+  finishedPoints[-1] = point(-1, -1, 0, -1, -1);   // sentinel
+  for(i=0;i<X.length;i++) {
+    let word = X[i].word, toDel = {};
+    if(wordToY[word]) {   // check if word need to be check for being blankified
+      for(j of wordToY[word]) {
+        // pick up optimum among candidates
+        let optimum = point(-1, -1, 0, -1, -1), pId;
+        for(pId in candidates) {
+          let candidate = candidates[pId];
+          if(candidate.y < j && isLeftBetter(candidate, optimum)) {
+            // found better optimum
+            optimum = candidate;
+            if(!isPointExistsBetween(candidate.y, j))
+              toDel[candidate.pointId] = true;
+          }
+        }
+  
+        // picked optimum + current word
+        let combined = point(
+          i, j, optimum.cnt+1,
+          (optimum.cnt > 0) ? optimum.startX : i,
+          (optimum.cnt > 0) ? optimum.pointId : -1);
+        candidates[combined.pointId] = combined;
+        finishedPoints[combined.pointId] = combined;
+        pointCounter[j]--;
+  
+        // update global optimum
+        if(isLeftBetter(combined, gOptimum))
+          gOptimum = combined;
+      }
+      for(j in toDel)
+        delete candidates[j];
+    }
+  }
+
+  // generate blankified ex
+  let p = gOptimum, idx, l;
+  let blankifiedEx = ex;
+  while(p.cnt > 0) {
+    idx = X[p.x].idx;
+    l = X[p.x].word.length;
+    blankifiedEx = blankifiedEx.substring(0, idx) + BLANK + blankifiedEx.substring(idx+l);
+    p = finishedPoints[p.prevId];
+  }
+
+  return blankifiedEx;
+};
+// end of blankified
+
+exports.isObjectEmpty = obj => {
+  for(const _ in obj)  return false;
+  return true;
+};
+
+exports.changePassword = async (oldPassword, newPassword) => {
+  // request
+  const req = fetch(exports.serverAddress + '/changePassword', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({oldPassword, newPassword}),
+  });
+  await decapsulateJson(req);
+};
+
+async function getSrvAuxInfos() {
+  const req = fetch(exports.serverAddress + '/getAuxInfos', {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+  });
+  return decapsulateJson(req);
+};
+
+// fetch all terms whose timestamps are larger than a value
+async function updateTermsFromServer(minTimestamp=0) {
+  const req = fetch(exports.serverAddress + '/getTermList', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({minTimestamp}),
+  });
+  const {termInfos} = await decapsulateJson(req);
+  const srvAuxInfos = await getSrvAuxInfos();
+  const srvLastTSs = srvAuxInfos.lastTimestamps;
+  
+  // save
+  const {tx, terms, others} = await mydb.getObjectStores(
+    ['terms', 'others'], 'readwrite'
+  );
+  try {
+    // terms
+    await mydb.putIfNew(
+      conf.timestampFields.terms, termInfos, terms, others
+    );
+
+    // server's last timestamp for terms
+    // This is required because lastTimestamp doesn't mean the max timestmap among terms.
+    // ex) Say client1 added term1 and term2, and deleted term2.
+    //     Then client2 will see the difference term1.timestamp < server.terms.lastTimestamp
+    //     This will let client2 fetch all terms from the server every time.
+    //     To prevent such case, we consider server's lastTimestamp also
+    //       on updating client's last timestamp.
+    let srvTermsLastTS = {};
+    srvTermsLastTS[conf.timestampFields.terms] = srvLastTSs[conf.timestampFields.terms];
+    await mydb.updateLastTimestamp(others, srvTermsLastTS);
+  } catch(err) {
+    console.error(err);
+    tx.abort();
+    throw err;
+  }
+  
+  // update UI
+  exports.refreshTermList();
+}
+
+// Return null if failed
+async function getStackFromServer(stackId) {
+  const body = (stackId) ? {_id: stackId} : {};
+  const req = fetch(exports.serverAddress + '/getStack', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  try {
+    const data = await decapsulateJson(req);
+
+    // save to client
+    // make promise for quick response
+    new Promise(async (resolve, reject) => {
+      // build
+      let newStackInfo = Object.assign({},
+        data, {category: 'stack'}
+      );
+      delete newStackInfo.result;
+      
+      // save
+      const {tx, others} = await mydb.getObjectStores('others', 'readwrite');
+      try {
+        await mydb.putIfNew(conf.timestampFields.stack, newStackInfo, others, others);
+      } catch(err) {
+        console.error(err);
+        tx.abort();
+        reject(err);
+      }
+      resolve();
+    });
+    
+    return data;
+  } catch(err) {
+    // Stack may not exist on server-side. Hence, suppress error msg.
+    if(err.message !== 'no stack') {
+      console.error('Failed to fetch settings from the server: ', err);
+    }
+  }
+}
+
+// Return null if failed
+async function getSettingsFromServer() {
+  const req = fetch(exports.serverAddress + '/getSettings', {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+  });
+
+  // build
+  let settingsInfo = await decapsulateJson(req);
+  settingsInfo.category = 'settings';
+  
+  // save to client
+  // make promise for quick response
+  new Promise(async (resolve, reject) => {
+    // save
+    const {tx, others} = await mydb.getObjectStores('others', 'readwrite');
+
+    try {
+      await mydb.putIfNew(conf.timestampFields.settings, settingsInfo, others, others);
+    } catch(err) {
+      console.error(err);
+      tx.abort();
+      reject(err);
+    }
+    resolve();
+  });
+  
+  return settingsInfo;
+}
+
+async function syncSetTerm(syncInfos) {
+  function sendReq(termInfos) {
+    // upload to the server
+    // server will send the reply to service worker
+    // suppress 'return' for performance
+    fetch(exports.serverAddress + '/setTerms', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({termInfos}),
+    });
+  }
+  
+  if(syncInfos.length === 0) return;
+
+  // get termInfos
+  let termInfos = [], invalidSyncInfos = [];
+  const {terms} = await mydb.getObjectStores('terms');
+  for(const syncInfo of syncInfos) {
+    // get each term info
+    let termInfo;
+    if(syncInfo._id.startsWith(conf.tmpIdPrefixes.term)) {
+      termInfo = await terms.index('tmpId').get(syncInfo._id);
+    } else {
+      termInfo = await terms.get(syncInfo._id);
+    }
+    if(!termInfo) {
+      invalidSyncInfos.push(syncInfo);
+    }
+
+    // send by bulk
+    if(termInfos.length >= bulkSize) {
+      sendReq(termInfos);
+      termInfos = [];
+    }
+
+    // pend
+    termInfos.push(termInfo);
+  }
+
+  // deal with the rest terms
+  sendReq(termInfos);
+
+  // delete invalid syncs
+  if(invalidSyncInfos.length > 0) {
+    const {tx, syncs, others} = await mydb.getObjectStores('syncs', 'readwrite');
+    try {
+      await mydb.delIfOld(conf.timestampFields.sync, invalidSyncInfos, syncs, others);
+    } catch(err) {
+      console.error('aborting:', err);
+      tx.abort();
+    }
+  }
+}
+
+function syncDelTerm(syncInfos) {
+  function sendReq(termInfos) {
+    // Send POST to the server
+    // Server will send the reply to service worker
+    // Suppress 'return' for performance
+    fetch(exports.serverAddress + '/delTerms', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({termInfos}),
+    });
+  }
+
+  if(syncInfos.length === 0) return;
+
+  let termInfos = [];
+  for(const syncInfo of syncInfos) {
+    // send by bulk
+    if(termInfos.length >= bulkSize) {
+      sendReq(termInfos);
+      termInfos = [];
+    }
+
+    // pend
+    termInfos.push(syncInfo);
+  }
+
+  // deal with the rest terms
+  sendReq(termInfos);
+}
+
+function syncSettings(settings) {
+  if(!settings) return;
+
+  // server-side
+  fetch(exports.serverAddress + '/setSettings', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(settings),
+  });
+}
+
+function syncApplyTestResults(syncInfos) {
+  for(const syncInfo of syncInfos) {
+    fetch(exports.serverAddress + '/applyTestResult', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        stackId: syncInfo._id,
+        testResults: syncInfo.testResults,
+        timestamp: syncInfo.timestamp,
+      }),
+    });
+  }
+}
+
+function createTempId() {
+  return 'TERM' + crypto.randomBytes(16).toString('hex');
+}
+
+// Put an object in an array
+// If the input is an array already, it gives back.
+// obj: (array) or (object)
+function arraify(obj) {
+  return (obj.constructor === Array) ? obj : [obj]; 
+}
+
+// strip off the result from the server and parse them into json
+async function decapsulateJson(req) {
+  const res = await req;
+  let data = (res.ok) ? await res.json() : {result: false};
+  if(data.result) {
+    delete data.result;
+    return data;
+  } else {
+    throw new Error(data.msg);
+  }
 }
 
 export default exports;
