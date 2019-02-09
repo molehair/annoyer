@@ -10,6 +10,7 @@ import DialogTitle from '@material-ui/core/DialogTitle';
 import FormControl from '@material-ui/core/FormControl';
 import Input from '@material-ui/core/Input';
 import InputLabel from '@material-ui/core/InputLabel';
+import conf from '../lib/conf.js';
 
 const termDialogStyles = theme => ({
   form: {
@@ -31,65 +32,59 @@ class TermDialog extends React.Component {
     open: false
   }
   
-  componentDidMount= () => { this.handleClose(); }
-
-  handleTerm = (event) => { this.setState({term: event.target.value}); };
-  handleDef = (event) => { this.setState({def: event.target.value}); };
-  handleEx = (event) => { this.setState({ex: event.target.value}); };
-  handleMnemonic = (event) => { this.setState({mnemonic: event.target.value}); };
+  componentDidMount = () => this.handleClose()
+  handleTerm = event => this.setState({term: event.target.value})
+  handleDef = event => this.setState({def: event.target.value})
+  handleEx = event => this.setState({ex: event.target.value})
+  handleMnemonic = event => this.setState({mnemonic: event.target.value})
   
   handleClose = () => {
     this.setState({
       open: false,
       _id: '',
-      type: 1,
+      tmpId: '',
+      type: conf.termTypes.default,
       term: '',
       def: '',
       ex: '',
       mnemonic: '',
-      isModifying: false,
     });
   };
   
-  handleSubmit = (event) => {
+  handleSubmit = async event => {
     event.preventDefault();
-    let t = {
+    let termInfo = Object.assign({}, {
+      _id: this.state._id,
+      tmpId: this.state.tmpId,
       type: this.state.type,
       term: this.state.term,
       def: this.state.def,
       ex: this.state.ex,
       mnemonic: this.state.mnemonic || '',
-    };
-    if(this.state._id)
-      t._id = this.state._id;
-    
-    core.setTerm(t, this.state.isModifying)
-    .then(data => {
-      if(this.props.setTermCallback)
-        this.props.setTermCallback(data);
     });
+    try {
+      await core.setTerms(termInfo);
+      if(this.props.setTermCallback) {
+        this.props.setTermCallback();
+      }
+    } catch(err) {
+      if(this.props.setTermCallback) {
+        this.props.setTermCallback(err);
+      }
+    }
     this.handleClose();
   };
   
-  addNewTerm = () => this.setState({open: true, isModifying: false})
-  openTerm = (id) => {
-    this.setState({open: true, isModifying: true});
-    core.getTerm(id).then((doc) => {
-      if(doc) {
-        this.setState({
-          _id: doc._id,
-          type: doc.type,
-          term: doc.term,
-          def: doc.def,
-          ex: doc.ex,
-          mnemonic: doc.mnemonic,
-        });
-      }
-    });
+  addNewTerm = () => this.setState({open: true})
+  openTerm = async _id => {
+    this.setState({open: true});
+    const termInfo = await core.getTerm(_id);
+    if(termInfo)  this.setState(termInfo);
   };
 
   render() {
-    const { classes } = this.props;
+    const {classes} = this.props;
+    const isDisabled = (this.state._id || this.state.tmpId) ? true : false;
     return (
       <Dialog
         open={this.state.open}
@@ -104,7 +99,7 @@ class TermDialog extends React.Component {
                 margin="normal"
                 required
                 fullWidth
-                disabled={this.state.isModifying}
+                disabled={isDisabled}
               >
                 <InputLabel htmlFor="term">Term</InputLabel>
                 <Input
@@ -120,7 +115,7 @@ class TermDialog extends React.Component {
                 margin="normal"
                 required
                 fullWidth
-                disabled={this.state.isModifying}
+                disabled={isDisabled}
               >
                 <InputLabel htmlFor="def">Definition</InputLabel>
                 <Input
