@@ -1,23 +1,18 @@
-var express = require('express');
-var router = express.Router();
-var common = require('../common');
+const express = require('express');
+const router = express.Router();
+const common = require('../common');
 
-router.post('/', function(req, res, next) {
+router.post('/', async (req, res, next) => {
   const email = req.body.email;
-  const password = common.hashPassword(req.body.password);
+  const password = req.body.password;
 
-  const users = common.db.collection('users');
-
-  return users.findOne({email})
-  .then(doc => {
-    if(doc && password === doc.password) {
-      req.session.uid = doc._id;
-      req.session.user = email;
-      return res.json({result: true});
-    } else {
-      return res.json({result: false, msg: 'Incorrect ID/password.'});
-    }
-  });
+  try {
+    const uid = await common.login(email, password);
+    req.session.uid = uid;
+    return res.json({result: true});
+  } catch(err) {
+    return res.json({result: false, msg: err.message});
+  }
 });
 
 module.exports = router;

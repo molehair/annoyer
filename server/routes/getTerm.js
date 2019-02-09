@@ -1,28 +1,29 @@
-var express = require('express');
-var router = express.Router();
-var mongo = require('mongodb');
+const express = require('express');
+const mongo = require('mongodb');
+const router = express.Router();
 const common = require('../common');
+const logger = require('../logger');
 
-router.post('/', function(req, res, next) {
+router.post('/', async (req, res, next) => {
   const _id = req.body._id || '';
-  const terms = common.db.collection('terms');
 
   if(_id !== '') {
-    return terms.findOne({
-      _id: new mongo.ObjectId(_id),
-      uid: req.session.uid
-    }).then((doc) => {
-      if(doc.type === common.termTypes.default) {
-        return res.json({result: true, term: {
-          _id: doc._id.toHexString(),
-          term: doc.term,
-          type: doc.type,
-          def: doc.def,
-          ex: doc.ex,
-          mnemonic: doc.mnemonic,
-        }});
+    common.userSems[uid].take(async () => {
+      try {
+        const termInfos = await common.getTerms(
+          req.session.uid,
+          [new mongo.ObjectId(_id)],
+        );
+        return res.json({result: true, termInfo: termInfos[0]});
+      } catch(err) {
+        logger.error(err.stack);
+        return res.json({result: false, msg: err.message});
+      } finally {
+        common.userSems[uid].leave();
       }
     });
+  } else {
+    return res.json({result: false, msg: 'invalid id'});
   }
 });
 

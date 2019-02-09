@@ -1,37 +1,26 @@
-var express = require('express');
-var router = express.Router();
+const express = require('express');
+const router = express.Router();
 const common = require('../common');
-var mongo = require('mongodb');
+const logger = require('../logger');
 
-router.post('/', function(req, res, next) {
-  const stackId = req.body.stackId || '';
-  const stacks = common.db.collection('stacks');
-  const terms = common.db.collection('terms');
+router.post('/', (req, res, next) => {
+  const stackId = req.body._id;
+  const uid = req.session.uid;
+  
+  common.userSems[uid].take(async () => {
+    try {
+      let stackInfo = await common.getStack(uid, stackId);
+      stackInfo.result = true;
 
-  return stacks.findOne({
-    _id: new mongo.ObjectId(stackId),
-    uid: req.session.uid
-  }).then(doc => {
-    let promises = [];
-    for(var termId of doc.stack) {
-      promises.push(terms.findOne({_id: new mongo.ObjectId(termId)})
-      .then(doc => {
-        if(doc) {
-          return {
-            _id: doc._id.toHexString(),
-            term: doc.term,
-            type: doc.type,
-            def: doc.def,
-            ex: doc.ex,
-            mnemonic: doc.mnemonic,
-          };
-        } else
-          return null;
-      }));
+      res.json(stackInfo);
+    } catch(err) {
+      if(err.message !== 'no stack') {
+        logger.error(err.stack);
+      }
+      res.json({result: false, msg: err.message});
+    } finally {
+      common.userSems[uid].leave();
     }
-    return Promise.all(promises).then(docs => {
-      return res.json({result: true, stack: docs});
-    });
   });
 });
 

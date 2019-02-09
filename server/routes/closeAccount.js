@@ -1,28 +1,23 @@
-var express = require('express');
-var router = express.Router();
+const express = require('express');
+const router = express.Router();
 const common = require('../common');
+const logger = require('../logger');
+const conf = require('../../lib/conf.js');
 
-router.get('/', function(req, res, next) {
-  let promises = [];
-  const users = common.db.collection('users');
-  const terms = common.db.collection('terms');
-  const tokens = common.db.collection('tokens');
-  const stacks = common.db.collection('stacks');
-  const sessions = common.db.collection('sessions');
-  
-  // user data
+router.get('/', async (req, res, next) => {
   const uid = req.session.uid;
-  promises.push(users.deleteOne({_id: uid}));
-  promises.push(terms.deleteMany({uid}));
-  promises.push(tokens.deleteMany({uid}));
-  promises.push(stacks.deleteMany({uid}));
-  promises.push(sessions.deleteMany({"session.uid": uid}));
+  try {
+    const userInfo = await common.closeAccount(uid);
 
-  return Promise.all(promises).then(() => {
-    return res.json({result: true});
-  }).catch(err => {
-    return res.json({result: false, msg: err.toString()});
-  });
+    // send close account msg to all clients
+    await common.sendSync(uid, conf.syncTypes.closeAccount, {email: userInfo.email});
+    
+    // send ACK to the sender
+    res.json({result: true});
+  } catch(err) {
+    logger.error(err.stack);
+    res.json({result: false, msg: err.message});
+  }
 });
 
 module.exports = router;

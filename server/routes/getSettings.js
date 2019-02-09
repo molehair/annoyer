@@ -1,18 +1,20 @@
-var express = require('express');
-var router = express.Router();
+const express = require('express');
+const router = express.Router();
 const common = require('../common');
+const logger = require('../logger');
 
-router.get('/', function(req, res, next) {
-  const users = common.db.collection('users');
-
-  return users.findOne({_id: req.session.uid})
-  .then(doc => {
-    return res.json({result: true, settings: {
-      doPractice: doc.doPractice,
-      alarmClock: doc.alarmClock,
-      enabledDays: doc.enabledDays,
-      email: doc.email,
-    }});
+router.get('/', async (req, res, next) => {
+  const uid = req.session.uid;
+  common.userSems[uid].take(async () => {
+    try {
+      let settings = await common.getSettings(uid);
+      settings.result = true;
+      res.json(settings);
+    } catch(err) {
+      logger.error(err.stack);
+    } finally {
+      common.userSems[uid].leave();
+    }
   });
 });
 
