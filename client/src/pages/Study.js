@@ -20,12 +20,13 @@ import ExpansionPanelDetails from '@material-ui/core/ExpansionPanelDetails';
 import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
 import Icon from '@mdi/react'
 import { mdiCheck, mdiClose, mdiSend, mdiDeleteEmpty } from '@mdi/js'
+import mydb from '../lib/mydb';
 
 const BindKeyboardSwipeableViews = bindKeyboard(SwipeableViews);
 
 class AnswerPanel extends React.Component {
   render() {
-    const { classes } = this.props;
+    const {classes} = this.props;
     let data=[];
     if(this.props.mnemonic)
       data.push({summary: 'Mnemonic', content: this.props.mnemonic});
@@ -100,11 +101,19 @@ class StudyCard extends React.Component {
     </Grid>
   ]
 
-  componentDidMount = () => {
-    this.setState({type: this.props.type});
+  componentDidMount = async () => {
+    let termInfo;
+    if(this.props._id) {
+      const {terms} = await mydb.getObjectStores('terms');
+      termInfo = await terms.get(this.props._id);
+    }
+    this.setState({
+      type: this.props.type,
+      termInfo,
+    });
   }
 
-  handleAnswer = (test) => {
+  handleAnswer = test => {
     let testResult = {};
     const target = (this.props.questionType === 0) ? 'defScoreChange' : 'exScoreChange';
     if(test === 'correct') {
@@ -126,35 +135,35 @@ class StudyCard extends React.Component {
         this.setState({testResult: testResult, backgroundColor: red[300]});
       }
     }    
-    this.props.handleTestResult(this.props.termInfo._id, testResult);
+    this.props.handleTestResult(this.state.termInfo._id, testResult);
   }
 
-  handleSubmit = () => {
-    this.props.applyTestResults().then(data => {
-      if(data.result) {
-        this.setState({type: 'done', showAddTermBtn: true});
-      } else {
-        core.showMainNotification('Failed to submit', 'error', 0);
-      }
-    });
+  handleSubmit = async () => {
+    try {
+      await this.props.applyTestResults();
+      this.setState({type: 'done', showAddTermBtn: true});
+    } catch(err) {
+      console.error(err);
+      core.showMainNotification('Failed to submit', 'error', 0);
+    }
   }
 
   render() {
-    const { classes } = this.props;
-    let gridItems = []
+    const {classes} = this.props;
+    let gridItems = [];
 
     if(this.state.type === 'practice') {
-      // const termType = ['','default','audio clip'][this.props.termInfo.type];   // for future use
-      if(this.props.termInfo) {
+      // const termType = ['','default','audio clip'][this.state.termInfo.type];   // for future use
+      if(this.state.termInfo) {
         gridItems.push(
           <Grid item style={{width:'100%'}}>
             <CardContent>
               <Typography variant="h5" gutterBottom>
-                {this.props.termInfo.term}
+                {this.state.termInfo.term}
               </Typography>
-              {[['Definition', this.props.termInfo.def], 
-                ['Example', this.props.termInfo.ex],
-                ['Mnemonic', this.props.termInfo.mnemonic],
+              {[['Definition', this.state.termInfo.def], 
+                ['Example', this.state.termInfo.ex],
+                ['Mnemonic', this.state.termInfo.mnemonic],
                 ].map(x => (
                   <div key={x[0]}>
                     <Typography variant="subtitle2" align='left' gutterBottom>
@@ -220,7 +229,7 @@ class StudyCard extends React.Component {
       );
       gridItems.push(<Grid item></Grid>);
     } else if(this.state.type === 'test') {
-      const termInfo = this.props.termInfo;
+      const termInfo = this.state.termInfo;
       // const termType = ['','default','audio clip'][termInfo.type];      // for future use
       let question, problem, answer;
   
@@ -366,42 +375,39 @@ class Study extends React.Component {
   };
   testResults = {};
 
-  handleChangeIndex = index => this.setState({index})
-  handleTestResult = (termID, testResult) => {this.testResults[termID] = testResult}
-  addNewTerm = () => this.termDialog.addNewTerm()
-  render() {
-    const {classes} = this.props;
+  componentDidMount = () => {
+    const {classes, action, curIndices, stack, questionTypes} = this.props;
     let cards = [];
 
     // cards of terms
-    if(this.props.action === 'practice') {
-      cards = [...Array(this.props.curIndices.length).keys()].map(i => (
+    if(action === 'practice') {
+      cards = [...Array(curIndices.length).keys()].map(i => (
         <div
           className={classes.cardCover}
           onClick={() => this.handleChangeIndex(i)}
           key={i}
         >
           <StudyCard
-            type={this.props.action}
-            termInfo={this.props.stack[this.props.curIndices[i]]}
+            type={action}
+            _id={stack[curIndices[i]]}
             index={i}
-            totalLen={this.props.curIndices.length}
+            totalLen={curIndices.length}
           />
         </div>
       ));
-    } else {  // this.props.action === test
-      cards = [...Array(this.props.stack.length).keys()].map(i => (
+    } else {  // action === test
+      cards = [...Array(stack.length).keys()].map(i => (
         <div
           className={classes.cardCover}
           onClick={() => this.handleChangeIndex(i)}
           key={i}
         >
           <StudyCard
-            type={this.props.action}
-            termInfo={this.props.stack[i]}
+            type={action}
+            _id={stack[i]}
             index={i}
-            totalLen={this.props.stack.length}
-            questionType={this.props.questionTypes[i]}
+            totalLen={stack.length}
+            questionType={questionTypes[i]}
             handleTestResult={(termID, testResult) => this.handleTestResult(termID, testResult)}
           />
         </div>
@@ -414,35 +420,46 @@ class Study extends React.Component {
       <div
         className={classes.cardCover}
         onClick={() => this.handleChangeIndex(cardsLen)}
-        key={this.props.stack.length}
+        key={stack.length}
       >
         <StudyCard
-          type={(this.props.action === 'practice') ? 'done' : 'testSubmit'}
-          applyTestResults={() => core.applyTestResults(this.testResults)}
+          type={(action === 'practice') ? 'done' : 'testSubmit'}
+          applyTestResults={() => core.applyTestResults(this.props.stackId, this.testResults)}
           addNewTerm={() => this.addNewTerm()}
         />
       </div>
     );
 
-    return (
-      <div>
-        <BindKeyboardSwipeableViews
-          style={{
-            marginTop: 5,
-            paddingLeft: '10vw',
-            paddingRight: '10vw',
-          }}
-          index={this.state.index}
-          onChangeIndex={this.handleChangeIndex}
-        >
-          {cards}
-        </BindKeyboardSwipeableViews>
-        <TermDialog
-          onRef = {ref => {this.termDialog = ref}}
-          setTermCallback = {() => core.showMainNotification('Added', 'success')}
-        />
-      </div>
-    );
+    this.setState({cards}); 
+  }
+
+  handleChangeIndex = index => this.setState({index})
+  handleTestResult = (termID, testResult) => {this.testResults[termID] = testResult}
+  addNewTerm = () => this.termDialog.addNewTerm()
+  render = () => {
+    if(this.state.cards) {
+      return (
+        <div>
+          <BindKeyboardSwipeableViews
+            style={{
+              marginTop: 5,
+              paddingLeft: '10vw',
+              paddingRight: '10vw',
+            }}
+            index={this.state.index}
+            onChangeIndex={this.handleChangeIndex}
+          >
+            {this.state.cards}
+          </BindKeyboardSwipeableViews>
+          <TermDialog
+            onRef = {ref => {this.termDialog = ref}}
+            setTermCallback = {() => core.showMainNotification('Added', 'success')}
+          />
+        </div>
+      );
+    } else {
+      return <div></div>;
+    }
   }
 }
 Study.propTypes = {
