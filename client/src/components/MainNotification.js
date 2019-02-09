@@ -11,6 +11,7 @@ import Grid from '@material-ui/core/Grid';
 import Icon from '@mdi/react'
 import { mdiCheck, mdiClose, mdiInformationVariant } from '@mdi/js'
 import CircularProgress from '@material-ui/core/CircularProgress';
+import semaphore from 'semaphore';
 
 const mainNotificationStyles = theme => ({
   dialog: {
@@ -32,7 +33,7 @@ class MainNotification extends React.Component {
     open: false,
     queue: [],
   }
-  sem = require('semaphore')(1);
+  sem = semaphore(1);
   closer = setTimeout(() => {}, 0);
   
   add = (msg, type, time) => {
@@ -101,35 +102,35 @@ class MainNotification extends React.Component {
   };
   
   render() {
-    const { classes } = this.props;
+    const {classes} = this.props;
     const {msg, image} = this.state.queue[0] || {};
 
-    if(this.state.queue.length>0)
-    return (
-      <Dialog
-        open={this.state.open}
-        onClose={this.close}
-        aria-labelledby="form-dialog-title"
-        className={classes.dialog}
-      >
-        <DialogContent>
-          <Grid container
-            direction="column"
-            alignItems="center"
-          >
-            <Grid item xs={12}>
-              {image}
+    if(this.state.queue.length > 0) {
+      return (
+        <Dialog
+          open={this.state.open}
+          onClose={this.close}
+          aria-labelledby="form-dialog-title"
+          className={classes.dialog}
+        >
+          <DialogContent>
+            <Grid container
+              direction="column"
+              alignItems="center"
+            >
+              <Grid item xs={12}>
+                {image}
+              </Grid>
+              <Grid item xs={12}>
+                <DialogContentText style={{textAlign: "center"}}>
+                  {msg}
+                </DialogContentText>
+              </Grid>
             </Grid>
-            <Grid item xs={12}>
-              <DialogContentText style={{textAlign: "center"}}>
-                {msg}
-              </DialogContentText>
-            </Grid>
-          </Grid>
-        </DialogContent>
-      </Dialog>
-    );
-    else return (<div></div>);
+          </DialogContent>
+        </Dialog>
+      );
+    } else return (<div></div>);
   }
 }
 MainNotification.propTypes = {
