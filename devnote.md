@@ -1,4 +1,5 @@
 ## to do
+- blankify: add '-ly' case
 - remove sessions on changing password
 - offline usage, background sync
   - https://developers.google.com/web/updates/2015/12/background-sync
