@@ -7,12 +7,18 @@
 - update stack when modify a term in the stack
 - unified error handling
 - blankify error
-  - term: enough is enough
-  - ex: I've heard all the complaining from you that I can take. Enough is enough.
-  - blankified: I've heard all the complaining from you that I can take. Enough is ___
-  - term: set in stone
-  - ex: Keep in mind that these blueprints are not set in stone—they're just to give you a feel for the design.
-  - blankified: Keep in mind that these blueprints are not ___ ___ stone—they're just to give you a feel for the design.
+  - 1
+    - term: enough is enough
+    - ex: I've heard all the complaining from you that I can take. Enough is enough.
+    - blankified: I've heard all the complaining from you that I can take. Enough is ___
+  - 2
+    - term: set in stone
+    - ex: Keep in mind that these blueprints are not set in stone—they're just to give you a feel for the design.
+    - blankified: Keep in mind that these blueprints are not ___ ___ stone—they're just to give you a feel for the design.
+  - 3
+    - term: go hand in hand
+    - ex: You can't have peanut butter without jelly—they just go hand in hand!
+    - blankified: You can't have peanut butter without jelly—they just ___ ___in hand!
 - send only one test msg 
 - mixing the order of term, def, ex on practice
 - key bindings for answer, mnemonic, 'correct', 'wrong' buttons in test
