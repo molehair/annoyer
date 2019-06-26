@@ -31,9 +31,6 @@ class SignUp extends React.Component {
           this.state.password,
           this.state.passwordRepeat
         );
-          
-        // register token(silent success)
-        core.registerToken().catch(err => core.showMainNotification(err.message, 'error', 0));
 
         // go to main
         core.changePage('main');

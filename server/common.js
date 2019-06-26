@@ -117,6 +117,7 @@ exports.init = async app => {
     app.use('/getStack', require('./routes/getStack'));
     app.use('/applyTestResult', require('./routes/applyTestResult'));
     app.use('/setToken', require('./routes/setToken'));
+    app.use('/delToken', require('./routes/delToken'));
     app.use('/delTerms', require('./routes/delTerms'));
     app.use('/getSettings', require('./routes/getSettings'));
     app.use('/setSettings', require('./routes/setSettings'));
@@ -141,45 +142,41 @@ exports.init = async app => {
       userSems[uid] = semaphore(1);
 
       // scheduler
-      if(userDoc.doPractice) {
+      retreiveNotificationKey(uid).then(async notificationKey => {
+        if(!notificationKey) return;
         setScheduler(
           uid,
-          userDoc.doPractice,
           userDoc.alarmClock,
           userDoc.enabledDays,
         );
 
         // restore broken scheduler
-        stacks.findOne({uid})
-        .then(stackDoc => {
-          const date = new Date();
-          const curTime = date.getUTCHours()*60 + date.getUTCMinutes();
-          const elapsedTime = (24*60 + curTime - userDoc.alarmClock) % (24*60);
-          if(stackDoc && elapsedTime <= totalTime) {   // unfulfilled practice or test?
-            let offset = (totalTime + userDoc.alarmClock - curTime) % notiInterval; // totalTime => to make offset positive
+        const stackDoc = await stacks.findOne({uid});
+        const date = new Date();
+        const curTime = date.getUTCHours()*60 + date.getUTCMinutes();
+        const elapsedTime = (24*60 + curTime - userDoc.alarmClock) % (24*60);
+        if(stackDoc && elapsedTime <= totalTime) {   // unfulfilled practice or test?
+          let offset = (totalTime + userDoc.alarmClock - curTime) % notiInterval; // totalTime => to make offset positive
 
-            // prevent unintended successive practice/test notifications
-            // ex) Alarm is set on 10:00. After sending 2nd noti on 10:30, the server is reset.
-            //     When it booted at 10:30, we should not send the next one at 10:30 again.
-            if(offset === 0 &&
-              Math.floor(elapsedTime/notiInterval) + 1 <= stackDoc.curNotifiedCount) {
-              offset = notiInterval;
-            }
-
-            setTimeout(() => {
-              workerFunction(uid)    // initial execution
-              .then(() => {
-                if(stackDoc.curNotifiedCount < nTotalNoti) {  // Was it not a test?
-                  // set worker for the rest
-                  setWorker(uid, setInterval(() => {
-                    workerFunction(uid);
-                  }, notiInterval*60*1000));
-                }
-              });
-            }, offset*60*1000);
+          // prevent unintended successive practice/test notifications
+          // ex) Alarm is set on 10:00. After sending 2nd noti on 10:30, the server is reset.
+          //     When it booted at 10:30, we should not send the next one at 10:30 again.
+          if(offset === 0 &&
+            Math.floor(elapsedTime/notiInterval) + 1 <= stackDoc.curNotifiedCount) {
+            offset = notiInterval;
           }
-        });
-      }
+
+          setTimeout(async () => {
+            await workerFunction(uid)    // initial execution
+            if(stackDoc.curNotifiedCount < nTotalNoti) {  // Was it not a test?
+              // set worker for the rest
+              setWorker(uid, setInterval(() => {
+                workerFunction(uid);
+              }, notiInterval*60*1000));
+            }
+          }, offset*60*1000);
+        }
+      });
     }
     logger.info('Schedulers are set.');
   }));
@@ -192,6 +189,7 @@ exports.init = async app => {
   logger.info('* Annoyer server is ready.');
 };
 
+// add token to notification group
 exports.setToken = async (uid, token) => {
   const notificationKey = await retreiveNotificationKey(uid);
   if(notificationKey) {
@@ -243,6 +241,35 @@ exports.setToken = async (uid, token) => {
       throw new Error('No notification_key found: ' + JSON.stringify(json));
     }
   }
+};
+
+// del token from notification group
+exports.delToken = async (uid, token) => {
+  const notificationKey = await retreiveNotificationKey(uid);
+  if(notificationKey) {
+    //-- notification key is acquired --//
+    // del token from the group
+    let body = {
+      operation: 'remove',
+      notification_key_name: uid,
+      notification_key: notificationKey,
+      registration_ids: [token],
+    };
+    const res = await fetch('https://fcm.googleapis.com/fcm/notification', { 
+      method: 'post',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'key=' + env.FCM_SERVER_KEY,
+        'project_id': env.FCM_SENDER_ID,
+      },
+      body: JSON.stringify(body),
+    });
+    if(res.ok)  return res.json();
+    else {
+      logger.error(res);
+      return false;
+    }
+  } else return false;
 };
 
 // options = {minTimestamp, termIds}
@@ -475,7 +502,7 @@ exports.getSettings = async uid => {
   const users = db.collection('users');
   const doc = await users.findOne({_id: uid});
   return {
-    doPractice: doc.doPractice,
+    alarmEnabled: doc.alarmEnabled,
     alarmClock: doc.alarmClock,
     enabledDays: doc.enabledDays,
     email: doc.email,
@@ -492,11 +519,6 @@ exports.setSettings = async (uid, data) => {
     const stacks = db.collection('stacks');
   
     let settingsChange = {};
-  
-    // doPractice
-    if('doPractice' in data && typeof data.doPractice === 'boolean') {
-      settingsChange.doPractice = data.doPractice;
-    }
     
     // alarmClock
     if('alarmClock' in data) {
@@ -537,12 +559,11 @@ exports.setSettings = async (uid, data) => {
 
 
       // refresh scheduler
-      if('doPractice' in settingsChange
-        || 'alarmClock' in settingsChange
+      if('alarmClock' in settingsChange
         || 'enabledDays' in settingsChange) {
         await stacks.deleteOne({uid}, {session});
         const doc = await users.findOne({_id:uid}, {session});
-        await setScheduler(uid, doc.doPractice, doc.alarmClock, doc.enabledDays);
+        await setScheduler(uid, doc.alarmClock, doc.enabledDays);
       }
     }
 
@@ -1134,7 +1155,7 @@ async function updateUserInfo(uid, session, options) {
   return users.updateOne({_id: uid}, {$set: doc}, {session});
 }
 
-function setScheduler(uid, doPractice, alarmClock, enabledDays) {
+function setScheduler(uid, alarmClock, enabledDays) {
   const stacks = db.collection('stacks');
   
   // clear previous schedule
@@ -1143,8 +1164,8 @@ function setScheduler(uid, doPractice, alarmClock, enabledDays) {
   }
   clearWorker(uid);
 
-  // check it is to run scheduler
-  if(!doPractice || enabledDays.every(x => {return !x})) {
+  // check to disable scheduler
+  if(enabledDays.every(x => {return !x})) {
     delete schedules[uid];
     clearWorker(uid);
     return;

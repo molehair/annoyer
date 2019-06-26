@@ -32,7 +32,6 @@ import {
   mdiCloudDownload,
   mdiCloudUpload,
   mdiAccountRemoveOutline,
-  mdiCellphoneIphone,
 } from '@mdi/js'
 import IconButton from '@material-ui/core/IconButton';
 import Dropzone from 'react-dropzone'
@@ -240,17 +239,16 @@ ChangePasswordDialog = withStyles(changePasswordDialogStyles)(ChangePasswordDial
 
 class SettingsList extends React.Component {
   state = {
-    doPractice: false,
+    alarmEnabled: false,
     alarmClock: "",
     enabledDays: [false, false, false, false, false, false, false],
     email: '',
     extendRestore: false,
     isDropping: false,
-    isTokenRegistered: core.isTokenRegistered,
   }
 
   componentDidMount = async () => {
-    let {doPractice, alarmClock, enabledDays, email} = await core.getSettings();
+    let {alarmEnabled, alarmClock, enabledDays, email} = await core.getSettings();
     
     // alarmClock: UTC to local
     const offset = new Date().getTimezoneOffset();    // offset to UTC
@@ -263,20 +261,25 @@ class SettingsList extends React.Component {
     const minute = ('' + (alarmClock % 60)).padStart(2, '0');
     alarmClock = hour + ':' + minute;
     
-    this.setState({doPractice, alarmClock, enabledDays, email});
+    this.setState({alarmEnabled, alarmClock, enabledDays, email});
   }
 
-  handleDoPractice = doPractice => {
-    return this.setSettings({doPractice})
-    .then(result => {
-      if(result && doPractice
-        && this.state.enabledDays.every(x => {return !x})) {
-        const enabledDays = [true, true, true, true, true, true, true];
-        this.setSettings({enabledDays});
+  handleAlarmEnabled = async alarmEnabled => {
+    if(alarmEnabled) {
+      try {
+        await core.registerToken();
+      } catch(err) {
+        core.showMainNotification(err.message, 'error');
       }
-    });
+    } else {
+      try {
+        await core.deregisterToken();
+      } catch(err) {
+        console.error(err.message);
+      }
+    }
+    return this.setSettings({alarmEnabled});
   }
-
   handleAlarmClock = alarmClock => this.setSettings({alarmClock})
   handleEnabledDays = index => {
     let enabledDays = this.state.enabledDays;
@@ -352,17 +355,6 @@ class SettingsList extends React.Component {
   }
   
   handleCloseAccount = () => this.props.showCloseAccountDialog()
-  registerToken = async () => {
-    try {
-      await core.registerToken();
-      core.showMainNotification('Registered!', 'success');
-      this.setState({isTokenRegistered: true});
-    } catch(err) {
-      console.error(err);
-      core.showMainNotification(err.message, 'error', 0);
-      this.setState({isTokenRegistered: false});
-    }
-  }
 
   render() {
     const { classes } = this.props;
@@ -370,23 +362,17 @@ class SettingsList extends React.Component {
     return (
       <div className={classes.root}>
         <List subheader={<ListSubheader disableSticky>Schedule</ListSubheader>}>
-          {!this.state.isTokenRegistered && 
-            <ListItem button onClick={this.registerToken}>
-              <Icon path={mdiCellphoneIphone} size={1} />
-              <ListItemText primary="Register this device" />
-            </ListItem>
-          }
           <ListItem>
             <Icon path={mdiBellOutline} size={1} />
             <ListItemText primary="Notification" />
             <ListItemSecondaryAction>
               <Switch
-                onChange={event => this.handleDoPractice(event.target.checked)}
-                checked={this.state.doPractice}
+                onChange={event => this.handleAlarmEnabled(event.target.checked)}
+                checked={this.state.alarmEnabled}
               />
             </ListItemSecondaryAction>
           </ListItem>
-          <ListItem disabled={!this.state.doPractice}>
+          <ListItem>
             <Icon path={mdiAlarm} size={1} />
             <ListItemText primary="Alarm Clock" />
             <ListItemSecondaryAction>
@@ -404,16 +390,15 @@ class SettingsList extends React.Component {
                     step: 300, // in sec
                   }}
                   onChange={event => this.handleAlarmClock(event.target.value)}
-                  disabled={!this.state.doPractice}
                 />
               </form>
             </ListItemSecondaryAction>
           </ListItem>
-          <ListItem disabled={!this.state.doPractice}>
+          <ListItem>
             <Icon path={mdiCalendarRange} size={1} />
             <ListItemText primary="Days of practice" />
           </ListItem>
-          <ListItem disabled={!this.state.doPractice}>
+          <ListItem>
               <Grid container justify="space-around" direction="row" alignItems="center" spacing={16}>
                 {[
                   [0, 'Sun'],
@@ -430,7 +415,6 @@ class SettingsList extends React.Component {
                       variant={(this.state.enabledDays[x[0]]) ? "contained" : "outlined"}
                       color={(this.state.enabledDays[x[0]]) ? "primary" : "default"}
                       onClick={() => this.handleEnabledDays(x[0])}
-                      disabled={!this.state.doPractice}
                     >
                       {x[1]}
                     </Button>

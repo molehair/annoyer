@@ -6,11 +6,11 @@ import conf from './lib/conf';
 import mydb from './lib/mydb';
 import csv from 'fast-csv';
 import fileReaderStream from 'filereader-stream';
+import AVLTree from 'avl';
 
 const bulkSize = 5;                  // how many terms we should deal with at once?
 
 const exports = {
-  isTokenRegistered: false,
   refreshTermList: () => {},          // will be replaced also
 };
 
@@ -26,15 +26,6 @@ exports.init = () => {
   proms.push(firebase.initializeApp({
     messagingSenderId: packageJson.firebaseMessagingSenderId,
   }));
-
-  // FCM
-  if(firebase.messaging.isSupported()) {
-    exports.messaging = firebase.messaging();
-    exports.messaging.usePublicVapidKey(packageJson.firebaseWebPushKeyPublic);
-    exports.messaging.onTokenRefresh(() => this.getToken());
-  } else {
-    exports.messaging = null;
-  }
 
   // indexedDB
   proms.push(mydb.open());
@@ -155,59 +146,67 @@ exports.sync = async () => {
   exports.refreshTermList();
 };
 
+exports.setupFCM = () => {
+  if(firebase.messaging.isSupported()) {
+    exports.messaging = firebase.messaging();
+    exports.messaging.usePublicVapidKey(packageJson.firebaseWebPushKeyPublic);
+    exports.messaging.onTokenRefresh(() => this.registerToken());
+  } else throw new Error('Messaging is not supported.');
+}
+
 exports.getToken = async () => {
   // Get Instance ID token. Initially this makes a network call, once retrieved
   // subsequent calls to getToken will return from cache.
-  try {
-    // get token
-    const token = await exports.messaging.getToken();
-    if(!token) {
-      console.error('No Instance ID token available. Request permission to generate one.');
-      return false;
-    }
-
-    // send request
-    const req = fetch(exports.serverAddress + '/setToken', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({token}),
-    });
-    await decapsulateJson(req);
-    exports.isTokenRegistered = true;
-    console.log('Token is registered.');
-  } catch(err) {
-    console.error('An error occurred while retrieving token. ', err);
+  const token = await exports.messaging.getToken();
+  if(!token) {
+    throw new Error('No Instance ID token available. Request permission to generate one.');
   }
-};
+  return token;
+}
 
 // register to both push and Annoyer server
 exports.registerToken = async () => {
-  // already registered?
-  if(exports.isTokenRegistered) return;
+  if(!exports.messaging) exports.setupFCM();
+  await exports.messaging.requestPermission();
+  const token = await exports.getToken();
 
-  // not supported?
-  if(!exports.messaging) {
-    throw new Error('Messaging is not supported.');
-  }
+  // register to Annoyer server
+  const req = fetch(exports.serverAddress + '/setToken', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({token}),
+  });
+  await decapsulateJson(req);
+  console.log('Token is registered.');
+};
 
-  // do
-  try {
-    await exports.messaging.requestPermission();
-    console.log('Notification permission granted.');
-    await exports.getToken();
-  } catch(err) {
-    console.error('Unable to get permission to notify.', err);
-    throw err;
-  }
+// register to both push and Annoyer server
+exports.deregisterToken = async () => {
+  if(!exports.messaging) return;
+  const token = await exports.getToken();
+
+  // register to Annoyer server
+  const req = fetch(exports.serverAddress + '/delToken', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({token}),
+  });
+  await decapsulateJson(req);
+  console.log('Token is deregistered.');
 };
 
 exports.closeAccount = async () => {
   try {
     // server part
+    await exports.deregisterToken();
     const req = fetch(exports.serverAddress + '/closeAccount', {
       method: 'GET',
       credentials: 'include',
@@ -217,9 +216,6 @@ exports.closeAccount = async () => {
       },
     });
     await decapsulateJson(req);
-
-    // push token
-    exports.isTokenRegistered = false;
 
     // client
     await mydb.initDB(true);
@@ -360,9 +356,9 @@ exports.setSettings = async settingsInfo => {
     // timestamp
     settingsInfo.timestamp = Date.now();
 
-    // client DB
+    // local change
     await mydb.putIfNew(conf.timestampFields.settings, settingsInfo, others, others);
-    
+
     // sync for server
     const syncInfo = Object.assign(settingsInfo, {
       _id: conf.syncTypes.setSettings,
@@ -419,14 +415,18 @@ exports.login = async (email, password) => {
   // check sync
   exports.checkSync();
 
-  // push token
-  exports.registerToken().catch(err => exports.showMainNotification(err.message, 'error', 0));
-
-  // set email
   const {tx, others} = await mydb.getObjectStores('others', 'readwrite');
   try {
-    // sync for server
     let settingsInfo = await others.get('settings');
+
+    // push token
+    if(settingsInfo.alarmEnabled) {
+      exports.registerToken()
+      .catch(err => exports.showMainNotification(err.message, 'error', 0));
+    }
+    
+    // set email
+    // sync for server
     settingsInfo.email = email;
     await others.put(settingsInfo);
   } catch(err) {
@@ -441,6 +441,7 @@ exports.logout = async () => {
   await mydb.initDB(true);
 
   // server
+  await exports.deregisterToken();
   fetch(exports.serverAddress + '/logout', {
     method: 'GET',
     credentials: 'include',
@@ -449,9 +450,6 @@ exports.logout = async () => {
       'Content-Type': 'application/json',
     },
   });
-
-  // push token
-  exports.isTokenRegistered = false;
 };
 
 exports.checkLogin = async () => {
@@ -556,7 +554,7 @@ exports.blankify = (term, ex) => {
   function parseSentence(sentence, needVariants) {
     function isWord(c) {
       const code = c.charCodeAt(0);
-      return (0x41 <= code && code <= 0x5A) || (0x61 <= code && code <= 0x7A) || 0x80 <= code;
+      return (0x41 <= code && code <= 0x5A) || (0x61 <= code && code <= 0x7A);// || 0x80 <= code;
     }
     let i, word = '';
     sentence += '.';    // sentinel for getting last word
@@ -583,6 +581,7 @@ exports.blankify = (term, ex) => {
           l.push(word + 'ed');
           l.push(word + word[word.length-1] + 'ing');   // shop => I was shopping.
           l.push(word + 'ing');
+          l.push(word + 'ly');      // adjective -> adverb
           l.push(word + 's');       // say => He says blah.
           l.push(word + 'd');       // ace => You aced the course.
           l.push(word);      // original one should be compared lastly
@@ -595,40 +594,12 @@ exports.blankify = (term, ex) => {
     return coordinate;
   };
 
-  // check if there is a point in (y1 < y < y2) among the left points
-  function isPointExistsBetween(y1, y2) {
-    let i;
-    for(i=y1+1;i<y2;i++) {
-      if(pointCounter[i] > 0)
-        return false;
-    }
-    return true;
-  };
-
-  // return if the left point is better than the right one
-  function isLeftBetter(left, right) {
-    if(left.cnt > right.cnt)
-      return true;
-    else if(left.cnt < right.cnt)
-      return false;
-    else if(left.startX > right.startX)
-      return true;
-    else
-      return false;
-  };
-
-  let pointId = 0;
-  function point(x, y, cnt, startX, prevId) {
-    return {pointId: pointId++, x, y, cnt, startX, prevId};
-  };
-  
   let i, j;
 
-  // setup
+  //-- setup --//
   const X = parseSentence(ex.toLowerCase(), false);
   const Y = parseSentence(term.toLowerCase(), true);
   let wordToY = {};
-  let pointCounter = [...Array(Y.length)].fill(0);    // per y coordinate
   for(i=0;i<Y.length;i++) {
     let variant;
     for(variant of Y[i].variants) {
@@ -638,58 +609,49 @@ exports.blankify = (term, ex) => {
       else
         wordToY[variant] = [i];
     }
-
-    // pointCounter
-    pointCounter[i]++;
   }
 
-  // get the answer
-  let candidates = {};    // {pointId: point}, points that will be connected to future point
-  let gOptimum = point(-1, -1, 0, -1, -1);  // the pointId of the end of final blank list
-  let finishedPoints = {};   // {pointId: point}, points whose optimum of each is acquired
-  finishedPoints[-1] = point(-1, -1, 0, -1, -1);   // sentinel
+  //-- get the longest successive series --//
+  const cnts = new AVLTree((a, b) => a-b, false);   // [cnt, pointId]
+  let points = [];    // (index) == pointId, [x, y, prevId]
+  cnts.insert(0, 0);   // sentinel
+  points.push([-1, -1, -1]);   // sentinel
   for(i=0;i<X.length;i++) {
-    let word = X[i].word, toDel = {};
-    if(wordToY[word]) {   // check if word need to be check for being blankified
-      for(j of wordToY[word]) {
-        // pick up optimum among candidates
-        let optimum = point(-1, -1, 0, -1, -1), pId;
-        for(pId in candidates) {
-          let candidate = candidates[pId];
-          if(candidate.y < j && isLeftBetter(candidate, optimum)) {
-            // found better optimum
-            optimum = candidate;
-            if(!isPointExistsBetween(candidate.y, j))
-              toDel[candidate.pointId] = true;
+    let word = X[i].word, ys = wordToY[word];
+    if(!ys) continue;
+    
+    // find optimum and append to it
+    j = ys.length - 1;
+    let nd = cnts.maxNode();
+    while(nd != null) {
+      for(;j>=0;j--) {
+        const y = ys[j], point = points[nd.data];
+        if(point[1] < y) {
+          // cnts: update only if new one has lower y
+          const nd2 = cnts.find(nd.key+1);
+          if(nd2 && points[nd2.data][1] > y) {
+            nd2.data = points.length;   // pointId
+          } else if(!nd2) {
+            cnts.insert(nd.key+1, points.length);
           }
-        }
-  
-        // picked optimum + current word
-        let combined = point(
-          i, j, optimum.cnt+1,
-          (optimum.cnt > 0) ? optimum.startX : i,
-          (optimum.cnt > 0) ? optimum.pointId : -1);
-        candidates[combined.pointId] = combined;
-        finishedPoints[combined.pointId] = combined;
-        pointCounter[j]--;
-  
-        // update global optimum
-        if(isLeftBetter(combined, gOptimum))
-          gOptimum = combined;
+
+          // create the point
+          points.push([i, y, nd.data]);
+        } else break;
       }
-      for(j in toDel)
-        delete candidates[j];
+      nd = cnts.prev(nd);
     }
   }
-
+  
   // generate blankified ex
-  let p = gOptimum, idx, l;
+  let pId = cnts.maxNode().data, point, idx, l;
   let blankifiedEx = ex;
-  while(p.cnt > 0) {
-    idx = X[p.x].idx;
-    l = X[p.x].word.length;
+  while(pId !== 0) {
+    point = points[pId];
+    idx = X[point[0]].idx;
+    l = X[point[0]].word.length;
     blankifiedEx = blankifiedEx.substring(0, idx) + BLANK + blankifiedEx.substring(idx+l);
-    p = finishedPoints[p.prevId];
+    pId = point[2];
   }
 
   return blankifiedEx;

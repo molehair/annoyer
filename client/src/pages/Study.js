@@ -28,6 +28,7 @@ class AnswerPanel extends React.Component {
   render() {
     const {classes} = this.props;
     let data=[];
+    data.push({summary: 'Hint', content: this.props.hint});
     if(this.props.mnemonic)
       data.push({summary: 'Mnemonic', content: this.props.mnemonic});
     data.push({summary: 'Answer', content: this.props.answer});
@@ -231,18 +232,20 @@ class StudyCard extends React.Component {
     } else if(this.state.type === 'test') {
       const termInfo = this.state.termInfo;
       // const termType = ['','default','audio clip'][termInfo.type];      // for future use
-      let question, problem, answer;
+      let question, problem, hint, answer;
   
       if(termInfo) {
         if(this.props.questionType === 0) {
           //-- Ask definition --//
           question = 'What is the definition of the following term?';
           problem = termInfo.term;
+          hint = termInfo.ex;
           answer = termInfo.def;
         } else if(this.props.questionType === 1) {
           //-- Ask term --//
           question = 'Fill in the blanks in the following sentence.';
           problem = core.blankify(termInfo.term, termInfo.ex);
+          hint = termInfo.def;
           answer = termInfo.term;
         }
     
@@ -267,7 +270,7 @@ class StudyCard extends React.Component {
         gridItems.push(
           <Grid item>
             <CardContent>
-              <AnswerPanel answer={answer} mnemonic={termInfo.mnemonic} />
+              <AnswerPanel answer={answer} mnemonic={termInfo.mnemonic} hint={hint} />
             </CardContent>
           </Grid>
         );
@@ -412,23 +415,23 @@ class Study extends React.Component {
           />
         </div>
       ));
+  
+      // card of end or submit
+      const cardsLen = cards.length;
+      cards.push(
+        <div
+          className={classes.cardCover}
+          onClick={() => this.handleChangeIndex(cardsLen)}
+          key={stack.length}
+        >
+          <StudyCard
+            type='testSubmit'
+            applyTestResults={() => core.applyTestResults(this.props.stackId, this.testResults)}
+            addNewTerm={() => this.addNewTerm()}
+          />
+        </div>
+      );
     }
-
-    // card of end or submit
-    const cardsLen = cards.length;
-    cards.push(
-      <div
-        className={classes.cardCover}
-        onClick={() => this.handleChangeIndex(cardsLen)}
-        key={stack.length}
-      >
-        <StudyCard
-          type={(action === 'practice') ? 'done' : 'testSubmit'}
-          applyTestResults={() => core.applyTestResults(this.props.stackId, this.testResults)}
-          addNewTerm={() => this.addNewTerm()}
-        />
-      </div>
-    );
 
     this.setState({cards}); 
   }

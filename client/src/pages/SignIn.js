@@ -26,9 +26,6 @@ class SignIn extends React.Component {
       
       // go to main
       core.changePage('main');
-
-      // register token
-      await core.registerToken();
     } catch(err) {
       core.showMainNotification(err.message || 'Login failed', 'error');
     }
