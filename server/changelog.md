@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.1 (2019.6.26)
+- Support per-device notifications.
+
 ## 0.2.0 (2019.2.9)
 - implemented synchronization improving user's experience
 - implemented transactions on server-side(now require MongoDB >= 4.0)

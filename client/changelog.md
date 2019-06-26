@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 (2019.6.26)
+- Deleted "Well Done" on practice.
+- Fixed blankified sentence bugs.
+- Introduced hint on test
+- Support per-device notifications.
+
 ## 0.2.0 (2019.2.9)
 - implemented synchronization improving user's experience
 

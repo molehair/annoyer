@@ -1,6 +1,6 @@
 {
   "name": "annoyerserver",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "scripts": {
     "start": "node ./bin/www"
@@ -18,7 +18,7 @@
     "morgan": "~1.9.0",
     "node-fetch": "^2.2.1",
     "node-schedule": "^1.3.0",
-    "pug": "2.0.0-beta11",
+    "pug": "^2.0.4",
     "semaphore": "^1.1.0",
     "winston": "^3.1.0"
   }
