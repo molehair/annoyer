@@ -1,30 +1,14 @@
 ## to do
-- blankify: add '-ly' case
 - remove sessions on changing password
-- offline usage, background sync
-  - https://developers.google.com/web/updates/2015/12/background-sync
 - refresh term list fired by another client's update
 - update stack when modify a term in the stack
 - unified error handling
-- blankify error
-  - 1
-    - term: enough is enough
-    - ex: I've heard all the complaining from you that I can take. Enough is enough.
-    - blankified: I've heard all the complaining from you that I can take. Enough is ___
-  - 2
-    - term: set in stone
-    - ex: Keep in mind that these blueprints are not set in stone—they're just to give you a feel for the design.
-    - blankified: Keep in mind that these blueprints are not ___ ___ stone—they're just to give you a feel for the design.
-  - 3
-    - term: go hand in hand
-    - ex: You can't have peanut butter without jelly—they just go hand in hand!
-    - blankified: You can't have peanut butter without jelly—they just ___ ___in hand!
 - send only one test msg 
 - mixing the order of term, def, ex on practice
 - key bindings for answer, mnemonic, 'correct', 'wrong' buttons in test
 - shuffling the cards on test
 - remove scheduler on deleting app
-- confirmation dialog if doPractice is set on signout
+- confirmation dialog if alarmEnabled is set on signout
 - Term grouping in TermList like in Kakaotalk
 - display 'working...' when
   adding a term,
@@ -32,15 +16,12 @@
   modifying a term,
   backup,
   just everything that access DB...
-- per device notification switch(on/off)
+- background sync over multiple devices works only when alarmEnabled is enabled. Then, timestamp system is needed?
 - length limit on term, def, ex, etc...
 - audio upload(or use youtube clip without down/uploading?)
 - get input from user when testing for a single word(considering the variants of the word)
 - search, filter termlist
-- (new menu) statistics: graph of term levels
-- (new menu) history: user's behavior is whether deligent or lazy
 - a bunch of notification on lazy learning
-- On blankified problem, show optional definition as a hint
 - transaction on server-side
 - replace loading page with MainNotification
 - Study.js: move codes in render() to componentDidMount()
