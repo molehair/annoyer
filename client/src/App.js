@@ -42,9 +42,6 @@ class App extends React.Component {
       core.checkSync();
       core.sync();
 
-      // register token(silent success)
-      core.registerToken().catch(err => core.showMainNotification(err.message, 'error', 0));
-
       // find proper page
       if(this.search.action === 'practice' || this.search.action === 'test') {
         // fetch stack
